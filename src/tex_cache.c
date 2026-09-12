@@ -1220,4 +1220,24 @@ void tex_estatisticas(int *nItens, int *nPend, long *bytes) {
   if (bytes) *bytes = b;
 }
 
+// See the header. Same eviction steps as slotLivre/podar (unregister, delete,
+// zero, lum back to -1), applied to every settled slot at once.
+void tex_limpar(void) {
+  int n = 0;
+  if (!mtx) return;
+  SDL_LockMutex(mtx);
+  for (int i = 0; i < nMax; i++) {
+    if (itens[i].estado == PENDENTE || itens[i].estado == VAZIO) continue;
+    if (itens[i].tex) { gfx_tex_esquecer(itens[i].tex); glDeleteTextures(1, &itens[i].tex); }
+    if (itens[i].sup) { SDL_FreeSurface(itens[i].sup); itens[i].sup = NULL; }
+    memset(&itens[i], 0, sizeof(Item));
+    itens[i].lum = -1;
+    n++;
+  }
+  bytesUsados = 0;
+  SDL_UnlockMutex(mtx);
+  printf("[tex] cache limpo: %d itens despejados\n", n);
+  fflush(stdout);
+}
+
 long tex_cache_disco_bytes(void) { return cacheDiscoBytes; }

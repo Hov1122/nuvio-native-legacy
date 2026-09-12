@@ -41,6 +41,23 @@
 #include "descoberta.h"
 #include "trakt.h"
 #include "player.h"
+#include "linguas.h"
+
+#ifdef __EMSCRIPTEN__
+// Device locale for the web "system"/"device" audio sentinel (see linguas.h).
+// navigator.language follows the TV menu language on Tizen ("en-US",
+// "pt-BR"...). Read once at startup on the main thread — EM_JS outside it has
+// no DOM to read (same doorway rule as video_tizen.c).
+EM_JS(void, nv_idioma_aparelho, (char *dst, int tam), {
+  try {
+    var l = "";
+    if (typeof navigator !== "undefined") {
+      l = navigator.language || navigator.userLanguage || "";
+    }
+    if (l) stringToUTF8(l, dst, tam);
+  } catch (e) {}
+});
+#endif
 #ifndef NV_SEM_WEBOS
 #include <dlfcn.h>
 #include <SDL2/SDL_syswm.h>
@@ -385,6 +402,18 @@ int main(int argc, char **argv) {
   // e e a que estabelece o idioma e o espelho do limite de fileiras. Reler o
   // mesmo arquivo duas vezes e barato e deixa aquele bloco intacto.
   ajustes_dir(dados_dir()[0] ? dados_dir() : dirArte);
+  // Device locale, once: resolves the account's "system"/"device" audio
+  // preference to this TV's own language, the way the web player does instead
+  // of silently leaving the file default.
+  { char loc[16] = "";
+#ifdef __EMSCRIPTEN__
+    nv_idioma_aparelho(loc, (int)sizeof loc);
+#else
+    { const char *e = getenv("LC_ALL");
+      if (!e || !*e) e = getenv("LANG");
+      if (e && *e) snprintf(loc, sizeof loc, "%s", e); }
+#endif
+    if (loc[0]) ling_aparelho_idioma(loc); }
 
   // 4K SO ONDE A TV DEIXA, E SO SE PEDIREM.
   //

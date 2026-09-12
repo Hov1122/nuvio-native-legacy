@@ -142,11 +142,10 @@ const char *extras_ficha_lancamento(void);      // "2026-01-15"
 
 // TRAILERS. So o que da para mostrar: id do YouTube, nome e miniatura.
 //
-// NAO HA COMO TOCAR. O app web abre um iframe do YouTube; este port nao tem
-// reprodutor nem extrator de stream, e a decisao ja registrada em detail.c e
-// gfx.c foi remover o botao de trailer em vez de deixar um controle que promete
-// o que nao cumpre. A mesma regra vale aqui: o card entra na composicao, mas
-// nao deve receber foco enquanto nao houver o que abrir.
+// Playback is a fullscreen YouTube iframe overlay owned by
+// tools/tizen-shell.html (same approach as the web app). Entry points:
+// trailer_abrir() in trailer.c, called from the detail screen's trailer row
+// (OK) and hero trailer button.
 #define EX_TRAILER_MAX 6
 int         extras_n_trailers(void);
 const char *extras_trailer_yt(int i);        // id do video ("dQw4w9WgXcQ")
@@ -155,6 +154,12 @@ const char *extras_trailer_nome(int i);      // "Official Trailer"
 // caminho que o web usa (metaDetailsScreen.js:5728). Passe direto a tex_obter:
 // o cache de texturas baixa e guarda qualquer URL sozinho.
 const char *extras_trailer_miniatura(int i);
+// Appends one keyless trailer (Cinemeta /meta `trailers[]`, YouTube id) to the
+// title extras is currently showing. Ignores duplicates and anything for
+// another title. Locks inside; safe from any thread. This is what fills the
+// row with no Trakt and no TMDB key — TMDB entries (with names and language)
+// merge alongside by the same dedup.
+void extras_trailer_cinemeta(const char *imdb, const char *yt);
 
 // Titulos relacionados, para a aba "Mais como este".
 int  extras_n_relacionados(void);

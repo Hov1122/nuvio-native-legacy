@@ -43,6 +43,7 @@
   <!-- tv.audio: o player mexe em volume e mudo. -->
   <tizen:privilege name="http://tizen.org/privilege/tv.audio"/>
 
+
   <!-- Sem tela de fundo transparente o plano do AVPlay, que fica ATRAS da
        pagina, nunca aparece: o furo em alpha que gfx_furo abre no framebuffer
        existiria e mesmo assim daria preto. E o mesmo problema que no webOS

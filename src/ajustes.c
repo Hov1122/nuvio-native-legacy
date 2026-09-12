@@ -82,7 +82,7 @@ typedef enum {
   // Layout da Home
   AJ_LANDSCAPE, AJ_HERO_CHEIO,
   // Fileiras da Home
-  AJ_FIL_LIMITE, AJ_FIL_ORDEM,
+  AJ_FIL_LIMITE, AJ_FIL_ORDEM, AJ_LIMPAR_IMAGENS,
   // Conteudo da Home
   AJ_RAIL, AJ_RAIL_MODERNA, AJ_RAIL_BLUR, AJ_HERO, AJ_HERO_CATALOGOS,
   AJ_DESCOBRIR, AJ_ROTULOS, AJ_NOME_ADDON, AJ_SUFIXO_TIPO,
@@ -91,7 +91,7 @@ typedef enum {
   AJ_CW_LIGADO, AJ_CW_FONTE, AJ_CW_ESTILO, AJ_CW_THUMB, AJ_CW_BLUR_PROX,
   AJ_CW_FURTHEST, AJ_CW_NAO_EXIBIDOS, AJ_CW_ORDEM,
   // Pagina de detalhe
-  AJ_DET_BLUR_NAO_VISTOS, AJ_DET_TRAILER, AJ_DET_META_EXT, AJ_DET_DATA_CHEIA,
+  AJ_DET_BLUR_NAO_VISTOS, AJ_DET_META_EXT, AJ_DET_DATA_CHEIA,
   // Foco no poster
   AJ_EXPANDIR, AJ_EXPANDIR_ATRASO, AJ_NAV_RAPIDA,
   // Profundidade
@@ -210,6 +210,7 @@ static const Opcao OPCOES[AJ_N] = {
   // copias do mesmo numero divergem no primeiro caminho que esquecer uma.
   NUM("Limite de fileiras",         FIL_LIMITE_MIN, FIL_LIMITE_MAX, 1, NULL),
   ACAO("Ordenar e ativar fileiras"),
+  ACAO("Limpar imagens"),
 
   ESC("Barra lateral",              V_RAIL, 2),   // collapseSidebar
   ESC("Barra lateral moderna",      V_LIGA, 2),   // modernSidebar
@@ -234,7 +235,6 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Ordenação",                  V_CW_ORDEM, 3), // continueWatchingSortMode
 
   ESC("Desfocar não assistidos",    V_LIGA, 2),   // blurUnwatchedEpisodes
-  ESC("Botão de trailer",           V_LIGA, 2),   // detailPageTrailerButtonEnabled
   ESC("Priorizar metadados externos", V_LIGA, 2), // preferExternalMetaAddonDetail
   ESC("Data de lançamento completa", V_LIGA, 2),  // showFullReleaseDate
 
@@ -283,7 +283,7 @@ static const char *CHAVE[] = {
   // fileirasui.txt (fileiras.c) e a conta nao tem chave equivalente — o teto do
   // web para este runtime e uma CONSTANTE (HOME_MAX_ROWS_LEGACY_TV), nao uma
   // preferencia, e a ordem da conta nunca pode ser ESCRITA pela TV.
-  "-limiteFileiras", "-ordenarFileiras",
+  "-limiteFileiras", "-ordenarFileiras", "-limparImagens",
   "collapseSidebar", "modernSidebar", "modernSidebarBlur",
   "heroSectionEnabled", "-heroCatalogKeys",
   "discoverLocation", "posterLabelsEnabled", "catalogAddonNameEnabled",
@@ -297,7 +297,7 @@ static const char *CHAVE[] = {
   "continueWatchingCardStyle",
   "useEpisodeThumbnailsInCw", "blurContinueWatchingNextUp",
   "nextUpFromFurthestEpisode", "showUnairedNextUp", "continueWatchingSortMode",
-  "blurUnwatchedEpisodes", "detailPageTrailerButtonEnabled",
+  "blurUnwatchedEpisodes",
   "preferExternalMetaAddonDetail", "showFullReleaseDate",
   "focusedPosterBackdropExpandEnabled", "focusedPosterBackdropExpandDelaySeconds",
   "fastHorizontalNavigationEnabled",
@@ -363,9 +363,9 @@ static const struct {
   int ini, n;
 } SECOES[] = {
   { "Reprodução",           "Reprodução", "play",         AJ_QUALIDADE,            6 },
-  { "Home",                 "Home",       "menu_home",    AJ_LANDSCAPE,           16 },
+  { "Home",                 "Home",       "menu_home",    AJ_LANDSCAPE,           17 },
   { "Continuar assistindo", "Retomar",    "avancar",      AJ_CW_LIGADO,            8 },
-  { "Página de detalhes",   "Detalhes",   "episodios",    AJ_DET_BLUR_NAO_VISTOS,  4 },
+  { "Página de detalhes",   "Detalhes",   "episodios",    AJ_DET_BLUR_NAO_VISTOS,  3 },
   { "Pôsteres e cards",     "Cartazes",   "aspecto",      AJ_EXPANDIR,            14 },
   { "Interface e conta",    "Conta",      "menu_profile", AJ_IDIOMA,              12 },
 };
@@ -439,6 +439,7 @@ static int valor[AJ_N] = {
 
   FIL_LIMITE_PADRAO,/* limite de fileiras: 7, o pedido do dono (espelho de fileiras.c) */
   0,                /* ordenar fileiras: acao */
+  0,                /* limpar imagens: acao */
 
   0,                /* barra lateral: recolhida (perfil; fabrica: fixa) */
   1,                /* barra lateral moderna: desligada */
@@ -466,7 +467,6 @@ static int valor[AJ_N] = {
   0,                /* ordenacao: padrao */
 
   1,                /* desfocar nao assistidos: desligado */
-  0,                /* botao de trailer: ligado */
   0,                /* metadados externos: ligado */
   0,                /* data completa: ligada */
 
@@ -500,7 +500,7 @@ static int valor[AJ_N] = {
   0, 0, 0,          /* perfil, sincronizacao, addons: linhas de leitura/acao */
   1,                /* onde o + salva: watchlist do Trakt (ver V_SALVOS) */
   0, 0, 0,          /* trakt, simkl, sair: acoes */
-  0, 0,             /* versao, espaco */
+  0, 0,             /* versao, espaco: leitura */
 };
 
 // Pedido de abrir a lista de addons, lido e zerado pelo app.c. A tela nao e
@@ -595,7 +595,6 @@ int ajustes_cw_mostrar_nao_exibidos(void)  { return lig(AJ_CW_NAO_EXIBIDOS); }
 int ajustes_cw_ordem(void)            { return valor[AJ_CW_ORDEM]; }
 
 int ajustes_desfocar_nao_assistidos(void) { return lig(AJ_DET_BLUR_NAO_VISTOS); }
-int ajustes_botao_trailer(void)       { return lig(AJ_DET_TRAILER); }
 int ajustes_meta_externo(void)        { return lig(AJ_DET_META_EXT); }
 
 int   ajustes_expandir_poster(void)   { return lig(AJ_EXPANDIR); }
@@ -715,6 +714,9 @@ void ajustes_dir(const char *dir) {
   rotulosDeIdioma();
   aplicarIdioma(AJ_LEG_LINGUA);
   aplicarIdioma(AJ_AUD_LINGUA);
+  // Language names on screen (track lists, settings options) follow the
+  // interface language. Without this an English UI still lists "Inglês".
+  ling_interface_ingles(valor[AJ_IDIOMA] == 1);
 }
 
 static void gravar(void) {
@@ -751,6 +753,7 @@ static void idiomasDoBlob(const char *json, const char *fim) {
     { "subtitle_preferred_language",         ling_conta_legenda  },
     { "subtitle_secondary_language",         ling_conta_legenda2 },
     { "preferred_audio_language",            ling_conta_audio    },
+    { "secondary_preferred_audio_language",  ling_conta_audio2   },
   };
   size_t k;
   for (k = 0; k < sizeof M / sizeof *M; k++) {
@@ -766,8 +769,11 @@ static void idiomasDoBlob(const char *json, const char *fim) {
     else if (!strcmp(texto, "null")) texto[0] = 0;
     M[k].aplica(texto);
   }
-  printf("[ajustes] idiomas da conta: legenda=\"%s\" audio=\"%s\"\n",
-         ling_legenda(), ling_audio());
+  // Effective (resolved) values: DEVICE/SYSTEM/ORIGINAL already mapped to a
+  // concrete language here. The raw blob values travel in the sync logs; what
+  // matters for "why did it pick Portuguese" is what the picker saw.
+  printf("[ajustes] idiomas da conta: legenda=\"%s\" audio=\"%s\" audio2=\"%s\"\n",
+         ling_legenda(), ling_audio(), ling_audio2());
   fflush(stdout);
 }
 
@@ -846,6 +852,7 @@ int ajustes_aplicar_blob(const char *json) {
     if (novo != valor[i]) { valor[i] = novo; mudou++; }
   }
 
+  ling_interface_ingles(valor[AJ_IDIOMA] == 1);   // a conta pode trazer idioma
   if (mudou) gravar();   // o que veio da conta tem de sobreviver ao arranque
   // Registra SEMPRE, inclusive zero. "Nenhuma linha no log" tem duas leituras
   // opostas — o blob nao foi aplicado, ou foi aplicado e ja estava tudo igual —
@@ -952,6 +959,7 @@ static const char *textoLeitura(int op) {
     return buf;
   }
   if (op == AJ_SAIR) return "OK";   /* igual nos dois idiomas */
+  if (op == AJ_LIMPAR_IMAGENS) return "OK";
   if (op == AJ_HERO_CATALOGOS) {
     // "Todos" com a lista vazia e o que o web escreve (common_all), e e o estado
     // do perfil do dono. Um "0" ali leria como "nenhum", o oposto do que e.
@@ -1063,7 +1071,6 @@ static const char *ajudaOpcao(int op) {
     case AJ_CW_ORDEM: return "Como a retomada se ordena: pelo mais recente, no estilo dos streamings, ou com os episódios futuros num bloco separado.";
 
     // --- Pagina de detalhe
-    case AJ_DET_TRAILER: return "Mostra o botão de trailer na tela do título, quando existe um trailer conhecido.";
     case AJ_DET_META_EXT: return "Prefere a ficha do addon de metadados à do Cinemeta. Útil quando o seu addon tem sinopse e elenco melhores.";
     case AJ_DET_DATA_CHEIA: return "Escreve a data de estreia por extenso em vez de só o ano.";
 
@@ -1092,6 +1099,7 @@ static const char *ajudaOpcao(int op) {
     case AJ_SIMKL: return "Conecta a sua conta do Simkl, uma alternativa ao Trakt para acompanhar séries.";
     case AJ_SAIR: return "Sai da conta nesta TV e apaga daqui a sessão, os addons e o progresso guardados.";
     case AJ_ESPACO: return "Uso atual de memória pelo cache de imagens, não espaço ocupado no armazenamento da TV.";
+    case AJ_LIMPAR_IMAGENS: return "Apaga na hora, sem confirmação, as imagens guardadas na memória. A arte volta do disco sem baixar de novo.";
     case AJ_VERSAO_I: return "Versão do aplicativo. Esta informação não pode ser alterada.";
     default: return "Use as setas laterais para escolher. A preferência é aplicada ao alterar o valor.";
   }
@@ -1294,6 +1302,10 @@ void ajustes_evento(const SDL_Event *e) {
       return;
     }
     if (focoOp == AJ_ADDONS) { pediuAddons = 1; return; }
+    // Purge without confirmation, like Sair below: the cost of clearing by
+    // accident is reloading artwork, and a modal is a screen this list
+    // doesn't have. The memory row right above shows 0.0 MB afterwards.
+    if (focoOp == AJ_LIMPAR_IMAGENS) { tex_limpar(); return; }
     if (focoOp == AJ_TRAKT) { traktauth_comecar(); return; }
     if (focoOp == AJ_SIMKL) { simklauth_comecar(); return; }
     if (focoOp == AJ_SAIR) {
@@ -1344,7 +1356,10 @@ void ajustes_evento(const SDL_Event *e) {
       if (focoOp == AJ_LEG_LINGUA || focoOp == AJ_AUD_LINGUA) aplicarIdioma(focoOp);
       // O rotulo de tipo e os generos das fileiras sao montados na entrada do
       // catalogo, ja no idioma da interface; trocar o idioma remonta.
-      if (focoOp == AJ_IDIOMA) desc_repetir();
+      if (focoOp == AJ_IDIOMA) {
+        ling_interface_ingles(valor[AJ_IDIOMA] == 1);
+        desc_repetir();
+      }
       // A FONTE DO CONTINUAR tambem remonta, e por um motivo diferente do
       // idioma: quem monta aquela fileira e montarContinuar (descoberta.c), e
       // o conteudo dela nao e refeito por desc_remontar_fileiras — essa so

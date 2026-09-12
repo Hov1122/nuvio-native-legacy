@@ -60,6 +60,10 @@ static int modo;
 // Coluna dentro da folha de LEGENDA: 0 = lista, 1 = estilo.
 #define FX_COL_ESTILO 2
 #define FX_N_ESTILO   9
+// Linha do "Atraso" dentro de EST_ROT abaixo. E um stepper de uma linha so:
+// LEFT/RIGHT aplicam -/+250 ms na hora, e a propria linha desenha o "- ... +"
+// para dizer isso. Ver valorEstilo e faixas_evento.
+#define FX_EST_ATRASO 7
 
 static int nLinhas(int col);
 
@@ -130,10 +134,12 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     // a quem esta olhando a tela.
     case 5: snprintf(dst, tam, i18n("%d de 8"), e->posicao + 1); break;
     case 6: snprintf(dst, tam, "%s", EST_BORDA[e->borda > 2 ? 2 : e->borda]); break;
+    // The "- ... +" chrome says LEFT/RIGHT step it live, like a "- value +"
+    // stepper with a single row.
     case 7: {
       int a = e->atrasoMs;
-      if (!a) snprintf(dst, tam, "0 s");
-      else    snprintf(dst, tam, "%+.2f s", a / 1000.0f);
+      if (!a) snprintf(dst, tam, "-  0 s  +");
+      else    snprintf(dst, tam, "-  %+.2f s  +", a / 1000.0f);
       break; }
     default: snprintf(dst, tam, "Aplicar"); break;
   }
@@ -149,11 +155,11 @@ static void ciclarEstilo(int linha) {
     case 4: e->fundo   = (e->fundo + 1) % 5; break;
     case 5: e->posicao = (e->posicao + 1) % 8; break;
     case 6: e->borda   = (e->borda + 1) % 3; break;
-    // -5 s a +5 s de 250 em 250 ms, voltando ao inicio. Passo menor exigiria
-    // dezenas de toques para sair do lugar num controle remoto.
+    // No cap, no wrap: each OK is +250 ms from wherever it stands (the old
+    // row looped -5 s..+5 s and back). -250 ms lives on LEFT, same row. A
+    // smaller step would take dozens of remote taps to matter.
     case 7:
       e->atrasoMs += 250;
-      if (e->atrasoMs > 5000) e->atrasoMs = -5000;
       break;
     default:
       *e = (VideoLegendaEstilo){ 120, 0, 0, 3, 1, 0, 0, TXT_FAMILIA_INTER };
@@ -206,8 +212,18 @@ void faixas_evento(const SDL_Event *e) {
   // Na de audio nao ha para onde ir — antes elas pulavam para a coluna de
   // legenda, que e justamente o que fazia os dois botoes do player parecerem o
   // mesmo botao.
-  if (k == SDLK_LEFT)  { if (modo && coluna == FX_COL_ESTILO) coluna = 1; return; }
-  if (k == SDLK_RIGHT) { if (modo && coluna == 1) coluna = FX_COL_ESTILO; return; }
+  // Stepper row: LEFT/RIGHT apply -/+250 ms live instead of switching
+  // columns. UP/DOWN still move between rows, and Back still closes.
+  if (k == SDLK_LEFT || k == SDLK_RIGHT) {
+    if (modo && coluna == FX_COL_ESTILO && foco[FX_COL_ESTILO] == FX_EST_ATRASO) {
+      VideoLegendaEstilo *e = player_leg_estilo();
+      e->atrasoMs += (k == SDLK_RIGHT) ? 250 : -250;
+      player_leg_estilo_mudou();
+      return;
+    }
+    if (k == SDLK_LEFT)  { if (modo && coluna == FX_COL_ESTILO) coluna = 1; return; }
+    if (k == SDLK_RIGHT) { if (modo && coluna == 1) coluna = FX_COL_ESTILO; return; }
+  }
   if (k == SDLK_UP)    { if (foco[coluna] > 0) foco[coluna]--; ajustarRolagem(); return; }
   if (k == SDLK_DOWN)  { if (foco[coluna] < nLinhas(coluna) - 1) foco[coluna]++;
                          ajustarRolagem(); return; }

@@ -1,4 +1,6 @@
 #include "extras.h"
+#include "linguas.h"
+#include "trailer.h"
 #include "vistoep.h"
 #include "trakt.h"
 #include "rede.h"
@@ -130,7 +132,7 @@ static char colNome[80];
 // Ficha tecnica e trailers: mesma viagem /movie/<id> da colecao.
 static char fichaStatus[32], fichaPaises[160], fichaCert[12], fichaLanc[16];
 static int  fichaDur;
-static struct { char yt[16], nome[80], mini[80]; } trailer[EX_TRAILER_MAX];
+static struct Trailer { char yt[16], nome[80], mini[80], idioma[8]; } trailer[EX_TRAILER_MAX];
 static int  nTrailer;
 static struct { char titulo[120], ano[8]; long tmdb; } col[EX_COL_MAX];
 static int  nCol;
@@ -187,6 +189,76 @@ static int para100(double v) {
 // escape de aspas e transforma \\uXXXX em espaco.
 static void numaLinha(char *s) {
   for (; *s; s++) if (*s == '\n' || *s == '\r' || *s == '\t') *s = ' ';
+}
+
+// Score for trailer ordering: 0 = primary audio language, 1 = secondary,
+// 2 = anything else (or unknown). Same targets the player itself uses, so the
+// row and the hero button agree with playback.
+static int escoreTrailer(const char *iso) {
+  const char *p1 = ling_audio(), *p2 = ling_audio2();
+  if (iso && iso[0]) {
+    if (p1[0] && ling_casa(iso, p1)) return 0;
+    if (p2[0] && ling_casa(iso, p2)) return 1;
+  }
+  return 2;
+}
+// Preferred-language trailers first, stable: TMDB order wins inside each
+// group, and with no preference nothing moves at all.
+static void ordenarTrailers(void) {
+  int i;
+  for (i = 1; i < nTrailer; i++) {
+    struct Trailer tmp = trailer[i];
+    int e0 = escoreTrailer(tmp.idioma), j = i - 1;
+    while (j >= 0 && escoreTrailer(trailer[j].idioma) > e0) {
+      trailer[j + 1] = trailer[j];
+      j--;
+    }
+    trailer[j + 1] = tmp;
+  }
+}
+
+// Colhe trailers do bloco "videos" de um corpo TMDB para trailer[].
+// So YouTube + Trailer/Teaser — o TMDB mistura ali featurette, clipe e cena
+// de bastidor. Sem trava: quem chama segura &trava e ja conferiu o idPedido
+// (o bloco do /movie) ou trava+confere em volta (os /videos avulsos).
+// Devolve quantos guardou e reordena tudo pelo idioma preferido.
+//
+// `results` pode aparecer duas vezes no corpo (release_dates e videos no
+// /movie com append); por isso a procura parte do bloco "videos". Na resposta
+// pura de /videos nao ha bloco "videos" e o unico results e o certo — e o que
+// faz a mesma funcao servir aos dois formatos.
+static int colherTrailers(const char *corpo, const char *fimC) {
+  const char *v = js_array(corpo, fimC, "results");
+  const char *vid = strstr(corpo, "\"videos\"");
+  int n = 0;
+  if (vid) v = js_array(vid, fimC, "results");
+  while (v && nTrailer < EX_TRAILER_MAX) {
+    const char *vf = js_fim(v);
+    char site[24] = "", tipo[24] = "", key[16] = "", nm[80] = "";
+    char iso[8] = "";
+    size_t q;
+    js_texto(v, vf, "site", site, sizeof site);
+    js_texto(v, vf, "type", tipo, sizeof tipo);
+    js_texto(v, vf, "key",  key,  sizeof key);
+    js_texto(v, vf, "name", nm,   sizeof nm);
+    js_texto(v, vf, "iso_639_1", iso, sizeof iso);
+    for (q = 0; iso[q]; q++)
+      if (iso[q] >= 'A' && iso[q] <= 'Z') iso[q] = (char)(iso[q] + 32);
+    if (key[0] && !strcmp(site, "YouTube") &&
+        (!strcmp(tipo, "Trailer") || !strcmp(tipo, "Teaser"))) {
+      int k = nTrailer++;
+      snprintf(trailer[k].yt,   sizeof trailer[k].yt,   "%s", key);
+      snprintf(trailer[k].nome, sizeof trailer[k].nome, "%s",
+               nm[0] ? nm : "Trailer");
+      snprintf(trailer[k].mini, sizeof trailer[k].mini,
+               "https://img.youtube.com/vi/%s/hqdefault.jpg", key);
+      snprintf(trailer[k].idioma, sizeof trailer[k].idioma, "%s", iso);
+      n++;
+    }
+    v = js_prox(vf);
+  }
+  if (n > 0) ordenarTrailers();
+  return n;
 }
 
 static void *buscar(void *arg) {
@@ -440,6 +512,47 @@ static void *buscar(void *arg) {
     }
   }
 
+  // --- trailers (serie): /tv/<id>/videos. O bloco do filme le os videos
+  // dentro do /movie com append_to_response; na serie o TMDB nao e consultado
+  // para mais nada, entao e uma chamada propria, so pelos videos. Sem
+  // language de proposito (ver o recurso do bloco do filme): video nao se
+  // localiza, filtrar por idioma so esvazia a fileira.
+  if (serie && pedidoAindaAtual(id)) {
+    const char *chave = desc_chave_tmdb();
+    long idSerie = tmdbId;
+    if (!chave || !chave[0]) {
+      printf("[extras] trailers: sem chave TMDB\n");
+      fflush(stdout);
+    }
+    if (chave && chave[0] && idSerie <= 0 && id[0]) {
+      snprintf(url, sizeof url,
+               "https://api.themoviedb.org/3/find/%s?api_key=%s"
+               "&external_source=imdb_id", id, chave);
+      corpo = rede_baixar(url, 15);
+      if (corpo) {
+        const char *v = js_array(corpo, NULL, "tv_results");
+        if (v) idSerie = (long)js_num(v, js_fim(v), "id", 0.0);
+        free(corpo);
+      }
+    }
+    if (chave && chave[0] && idSerie > 0) {
+      snprintf(url, sizeof url,
+               "https://api.themoviedb.org/3/tv/%ld/videos?api_key=%s",
+               idSerie, chave);
+      corpo = rede_baixar(url, 15);
+      if (corpo) {
+        const char *fimC = corpo + strlen(corpo);
+        int n = 0;
+        pthread_mutex_lock(&trava);
+        if (!strcmp(id, idPedido)) n = colherTrailers(corpo, fimC);
+        pthread_mutex_unlock(&trava);
+        free(corpo);
+        printf("[extras] trailers da serie: %d\n", n);
+        fflush(stdout);
+      }
+    }
+  }
+
   // --- colecao (so filme, e so quando ja sabemos o id do TMDB) ---
   if (!serie) {
     const char *chave = desc_chave_tmdb();
@@ -494,6 +607,12 @@ static void *buscar(void *arg) {
         js_texto(corpo, fimC, "status", fichaStatus, sizeof fichaStatus);
         js_texto(corpo, fimC, "release_date", fichaLanc, sizeof fichaLanc);
         fichaDur = (int)js_num(corpo, fimC, "runtime", 0.0);
+        // Original language of this title, for the web "original" audio
+        // sentinel. Same response, no extra trip. Root key read (nested
+        // spoken_languages use iso_639_1, a different key).
+        { char orig[8] = "";
+          if (js_texto_raiz(corpo, "original_language", orig, sizeof orig))
+            ling_titulo_original(orig); }
 
         // production_countries e um array de objetos; junta os nomes com
         // virgula, como a referencia mostra ("United States of America,
@@ -542,35 +661,14 @@ static void *buscar(void *arg) {
           snprintf(fichaCert, sizeof fichaCert, "%s",
                    br[0] ? br : us[0] ? us : qq); }
 
-        // Trailers: videos.results[]. So YouTube (o unico host cuja miniatura
-        // e obtivel por URL previsivel) e so o que for Trailer ou Teaser — o
-        // TMDB mistura ali featurette, clipe e cena de bastidor.
-        { const char *v = js_array(corpo, fimC, "results");
-          // `results` aparece duas vezes no corpo (release_dates e videos);
-          // procura a partir do bloco de videos para nao pegar o errado.
-          const char *vid = strstr(corpo, "\"videos\"");
-          if (vid) v = js_array(vid, fimC, "results");
-          while (v && nTrailer < EX_TRAILER_MAX) {
-            const char *vf = js_fim(v);
-            char site[24] = "", tipo[24] = "", key[16] = "", nm[80] = "";
-            js_texto(v, vf, "site", site, sizeof site);
-            js_texto(v, vf, "type", tipo, sizeof tipo);
-            js_texto(v, vf, "key",  key,  sizeof key);
-            js_texto(v, vf, "name", nm,   sizeof nm);
-            if (key[0] && !strcmp(site, "YouTube") &&
-                (!strcmp(tipo, "Trailer") || !strcmp(tipo, "Teaser"))) {
-              int k = nTrailer++;
-              snprintf(trailer[k].yt,   sizeof trailer[k].yt,   "%s", key);
-              snprintf(trailer[k].nome, sizeof trailer[k].nome, "%s",
-                       nm[0] ? nm : "Trailer");
-              snprintf(trailer[k].mini, sizeof trailer[k].mini,
-                       "https://img.youtube.com/vi/%s/hqdefault.jpg", key);
-            }
-            v = js_prox(vf);
-          } }
+        // Trailers: videos.results[] do append. O parse mora em
+        // colherTrailers (serve tambem a resposta pura de /videos).
+        colherTrailers(corpo, fimC);
 
         pthread_mutex_unlock(&trava);
         free(corpo);
+        printf("[extras] trailers do filme: %d\n", nTrailer);
+        fflush(stdout);
       }
     }
     if (idCol > 0) {
@@ -605,6 +703,31 @@ static void *buscar(void *arg) {
           nCol = nc;
         }
         pthread_mutex_unlock(&trava);
+      }
+    }
+
+    // Recurso quando o /movie com idioma nao trouxe videos: o parametro
+    // language do TMDB filtra os videos pelo idioma, e com a interface em
+    // portugues quase nenhum titulo tem trailer dublado — a fileira nascia
+    // vazia mesmo com trailers em ingles disponiveis. Sem language, vem tudo.
+    // So quando precisa: com trailers ja colhidos nao ha segunda viagem.
+    if (chave && chave[0] && idFilme > 0 && nTrailer == 0 &&
+        pedidoAindaAtual(id)) {
+      snprintf(url, sizeof url,
+               "https://api.themoviedb.org/3/movie/%ld/videos?api_key=%s",
+               idFilme, chave);
+      corpo = rede_baixar(url, 15);
+      if (corpo) {
+        const char *fimC = corpo + strlen(corpo);
+        int n = 0;
+        pthread_mutex_lock(&trava);
+        if (!strcmp(id, idPedido)) n = colherTrailers(corpo, fimC);
+        pthread_mutex_unlock(&trava);
+        free(corpo);
+        if (n > 0) {
+          printf("[extras] trailers via /videos sem idioma: %d\n", n);
+          fflush(stdout);
+        }
       }
     }
   }
@@ -697,10 +820,25 @@ static void *buscar(void *arg) {
   return NULL;
 }
 
+// Keyless trailer fetch (see buscarTrailersCinemeta below). Declared here so
+// extras_pedir can use it; defined further down next to the trailer store.
+struct TrCinePed { char imdb[24]; int serie; };
+static void *buscarTrailersCinemeta(void *arg);
+static void pedirTrailersCinemeta(const char *imdb, int serie) {
+  struct TrCinePed *p = malloc(sizeof *p);
+  pthread_t f;
+  if (!p) return;
+  snprintf(p->imdb, sizeof p->imdb, "%s", imdb ? imdb : "");
+  p->serie = serie;
+  if (pthread_create(&f, NULL, buscarTrailersCinemeta, p) != 0) free(p);
+  else pthread_detach(f);
+}
+
 void extras_pedir(const char *imdb, int serie, long tmdbId) {
   char id[24];
   const char *dp;
-  if (!imdb || imdb[0] != 't' || !trakt_ativo()) return;
+  int cine;
+  if (!imdb || imdb[0] != 't') return;
   // O campo do catalogo pode vir com episodio ("tt9737326:2:1"), que e o
   // formato que os addons de fonte usam. O Trakt so conhece o id do TITULO —
   // com o sufixo ele responde 404 e as tres abas ficavam vazias em toda serie.
@@ -722,7 +860,17 @@ void extras_pedir(const char *imdb, int serie, long tmdbId) {
   memset(vistos, 0, sizeof vistos);
   progressoPronto = proximoT = proximoE = 0;
   memset(notas, 0, sizeof notas);
-  if (fioVivo) { pthread_mutex_unlock(&trava); return; }
+  // Movies always get the keyless trailer fetch, with or without Trakt (series
+  // reuse the /meta body desc_episodios already downloads — see the hook
+  // there — instead of downloading it twice). The title tracking above no
+  // longer hides behind trakt_ativo(): without it the row could never fill
+  // for users without Trakt.
+  cine = !serie;
+  if (fioVivo || !trakt_ativo()) {
+    pthread_mutex_unlock(&trava);
+    if (cine) pedirTrailersCinemeta(id, serie);
+    return;
+  }
   snprintf(idEmCurso, sizeof idEmCurso, "%s", imdb);
   serieEmCurso = serie;
   tmdbEmCurso = tmdbId;
@@ -730,6 +878,7 @@ void extras_pedir(const char *imdb, int serie, long tmdbId) {
   pthread_mutex_unlock(&trava);
   if (pthread_create(&fio, NULL, buscar, NULL) != 0) fioVivo = 0;
   else pthread_detach(fio);
+  if (cine) pedirTrailersCinemeta(id, serie);
 }
 
 int extras_nota_trakt(void)  { return notaTrakt; }
@@ -880,6 +1029,61 @@ const char *extras_trailer_nome(int i) {
 }
 const char *extras_trailer_miniatura(int i) {
   return (i >= 0 && i < nTrailer) ? trailer[i].mini : "";
+}
+
+void extras_trailer_cinemeta(const char *imdb, const char *yt) {
+  int i;
+  if (!imdb || !imdb[0] || !trailer_id_valido(yt)) return;
+  pthread_mutex_lock(&trava);
+  if (!strcmp(imdb, idPedido)) {
+    for (i = 0; i < nTrailer; i++)
+      if (!strcmp(trailer[i].yt, yt)) break;
+    if (i >= nTrailer && nTrailer < EX_TRAILER_MAX) {
+      int k = nTrailer++;
+      snprintf(trailer[k].yt, sizeof trailer[k].yt, "%s", yt);
+      snprintf(trailer[k].nome, sizeof trailer[k].nome, "Trailer");
+      snprintf(trailer[k].mini, sizeof trailer[k].mini,
+               "https://img.youtube.com/vi/%s/hqdefault.jpg", yt);
+      trailer[k].idioma[0] = 0;   // unknown: sorts after known languages
+      ordenarTrailers();
+    }
+  }
+  pthread_mutex_unlock(&trava);
+}
+
+// Keyless trailer fetch: Cinemeta /meta carries `trailers[]` (YouTube ids)
+// for movies and series alike, no Trakt and no TMDB key involved. Own
+// detached thread so it never waits on — or blocks — the Trakt-gated
+// buscar(): stale results drop on the idPedido check inside the setter.
+static void *buscarTrailersCinemeta(void *arg) {
+  struct TrCinePed *p = arg;
+  char url[200], *corpo;
+  if (!p || !p->imdb[0]) { free(p); return NULL; }
+  snprintf(url, sizeof url, "https://v3-cinemeta.strem.io/meta/%s/%s.json",
+           p->serie ? "series" : "movie", p->imdb);
+  corpo = rede_baixar(url, 20);
+  if (corpo) {
+    const char *t = js_array(corpo, NULL, "trailers");
+    int n = 0;
+    while (t) {
+      const char *tf = js_fim(t);
+      char src[16] = "", tipo[16] = "";
+      js_texto(t, tf, "source", src, sizeof src);
+      js_texto(t, tf, "type", tipo, sizeof tipo);
+      if (!strcmp(tipo, "Trailer") || !strcmp(tipo, "Teaser")) {
+        extras_trailer_cinemeta(p->imdb, src);
+        n++;
+      }
+      t = js_prox(tf);
+    }
+    free(corpo);
+    if (n > 0) {
+      printf("[extras] trailers via cinemeta: %d\n", n);
+      fflush(stdout);
+    }
+  }
+  free(p);
+  return NULL;
 }
 
 const char *extras_colecao_nome(void) { return colNome; }

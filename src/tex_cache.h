@@ -95,6 +95,15 @@ void tex_novo_quadro(void);
 
 void tex_estatisticas(int *itens, int *pendentes, long *bytes);
 
+// Drops every decoded texture held in memory (the "Memória usada por imagens"
+// row reports this set). For when scrolling starts hitching: the artwork comes
+// back from the disk cache without downloading again. Must run on the draw
+// thread — glDeleteTextures needs the GL context, same as tex_bombear.
+// PENDENTE slots are left alone (the decode thread may still be writing them;
+// the next frame's pedidoObsoleto sweep cancels the stale ones) and so is the
+// disk cache.
+void tex_limpar(void);
+
 #endif
 
 // Quanto o cache de DISCO ocupa. No Tizen o "disco" e MEMFS: isto e RAM que

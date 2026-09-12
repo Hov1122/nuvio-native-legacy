@@ -91,7 +91,6 @@ int   ajustes_cw_ordem(void);
 
 // --- LAYOUT: pagina de detalhe (efeito vive em detail.c) ---------------------
 int   ajustes_desfocar_nao_assistidos(void); // blurUnwatchedEpisodes
-int   ajustes_botao_trailer(void);           // detailPageTrailerButtonEnabled
 int   ajustes_meta_externo(void);            // preferExternalMetaAddonDetail
 
 // --- LAYOUT: foco no poster --------------------------------------------------

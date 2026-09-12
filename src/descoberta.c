@@ -1,4 +1,5 @@
 #include "descoberta.h"
+#include "extras.h"
 #include "idioma.h"
 #include "ajustes.h"
 #include "catordem.h"
@@ -2046,6 +2047,21 @@ static void *buscarEps(void *u) {
     if (!corpo) { fioEpVivo = 0; return NULL; }
     metaCacheGuardar(serie, corpo);
   }
+  // Trailers keyless do /meta (`trailers[]`, id do YouTube em `source`).
+  // Mesma resposta dos episodios/elenco acima: sem viagem extra, e vale sem
+  // Trakt e sem chave TMDB — e o que preenche a fileira quando o TMDB nao
+  // responde. So Trailer/Teaser, como no TMDB (extras.c). O guard por titulo
+  // mora no setter.
+  { const char *t = js_array(corpo, NULL, "trailers");
+    while (t) {
+      const char *tf = js_fim(t);
+      char src[16] = "", tipo[16] = "";
+      js_texto(t, tf, "source", src, sizeof src);
+      js_texto(t, tf, "type", tipo, sizeof tipo);
+      if (!strcmp(tipo, "Trailer") || !strcmp(tipo, "Teaser"))
+        extras_trailer_cinemeta(serie, src);
+      t = js_prox(tf);
+    } }
   if (!ehFilme) publicarEpisodios(corpo, alvoItem, it->titulo);
   // O MAPA DE EPISODIOS VISTOS NAO E PEDIDO AQUI, e essa linha existe para dizer
   // por que: extras.c JA baixa /shows/<id>/progress/watched ao abrir o titulo,

@@ -61,17 +61,43 @@ cp "$ORIGEM"/*.jpg "$DESTINO"/ 2>/dev/null || true
 # campo "image" de badges/index.json, entao trocar a extensao la fecha o
 # circuito sem mexer em uma linha de C (ver src/badges.c:63).
 if find "$DESTINO" -name '*.webp' | grep -q .; then
-  command -v sips >/dev/null || { echo "tizen-art.sh: sips ausente, nao da para converter webp" >&2; exit 1; }
+  # Pick the first available converter instead of hard-coding sips, which is
+  # macOS-only. Chooses in that order because all of them are one-shot,
+  # lossless-at-input webp decoders.
+  conversor=""
+  if command -v dwebp  >/dev/null 2>&1; then conversor=dwebp      # libwebp tools
+  elif command -v magick  >/dev/null 2>&1; then conversor=magick  # ImageMagick 7
+  elif command -v convert >/dev/null 2>&1; then conversor=convert # ImageMagick 6
+  elif command -v ffmpeg  >/dev/null 2>&1; then conversor=ffmpeg
+  elif python3 -c 'import PIL' >/dev/null 2>&1; then conversor=python
+  elif command -v sips    >/dev/null 2>&1; then conversor=sips    # macOS only
+  fi
+  if [ -z "$conversor" ]; then
+    echo "tizen-art.sh: nenhum conversor webp->png disponivel" >&2
+    echo "  sudo apt install webp   (fornece dwebp)" >&2
+    echo "  ou: python3 -m pip install --user Pillow" >&2
+    exit 1
+  fi
   N=0
   for w in $(find "$DESTINO" -name '*.webp'); do
-    sips -s format png "$w" --out "${w%.webp}.png" >/dev/null 2>&1 || {
-      echo "tizen-art.sh: falhou convertendo $w" >&2; exit 1; }
+    out="${w%.webp}.png"
+    ok=0
+    case "$conversor" in
+      dwebp)   dwebp "$w" -o "$out" >/dev/null 2>&1 && ok=1 ;;
+      magick)  magick "$w" "$out" >/dev/null 2>&1 && ok=1 ;;
+      convert) convert "$w" "$out" >/dev/null 2>&1 && ok=1 ;;
+      ffmpeg)  ffmpeg -y -loglevel error -i "$w" "$out" >/dev/null 2>&1 && ok=1 ;;
+      python)  python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1]).load(); Image.open(sys.argv[1]).convert("RGBA").save(sys.argv[2])' "$w" "$out" >/dev/null 2>&1 && ok=1 ;;
+      sips)    sips -s format png "$w" --out "$out" >/dev/null 2>&1 && ok=1 ;;
+    esac
+    [ "$ok" = 1 ] || { echo "tizen-art.sh: falhou convertendo $w (via $conversor)" >&2; exit 1; }
     rm -f "$w"; N=$((N+1))
   done
   # O indice aponta para os nomes antigos; sem isto o app procura .webp que nao
   # existe mais e troca um defeito silencioso por outro.
-  [ -f "$DESTINO/badges/index.json" ] && sed -i '' 's/\.webp"/.png"/g' "$DESTINO/badges/index.json"
-  echo "tizen-art.sh: $N webp convertidos para png" >&2
+  # -i.bak (not -i '' / bare -i) is the one form accepted by both GNU and BSD sed.
+  [ -f "$DESTINO/badges/index.json" ] && sed -i.bak 's/\.webp"/.png"/g' "$DESTINO/badges/index.json" && rm -f "$DESTINO/badges/index.json.bak"
+  echo "tizen-art.sh: $N webp convertidos para png (via $conversor)" >&2
 fi
 
 # CONFERE QUE NADA DE PESSOA ENTROU. Nao e paranoia: o .ipk ja saiu uma vez com

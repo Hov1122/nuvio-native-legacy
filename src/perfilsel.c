@@ -571,21 +571,8 @@ void perfilsel_desenhar(Uint32 agora) {
     }
   }
 
-  // A dica DIZ O QUE O VOLTAR FAZ. A tela agora aparece a cada arranque, e sem
-  // esta linha o Voltar e uma tecla que ou fecha o app ou nao faz nada — as
-  // duas leituras erradas. Quando ha um perfil de ontem, ele e nomeado: um
-  // clique no controle e a pessoa esta na home dela.
-  { char dica[160];
-    const ContaPerfil *at = perfis_item_ativo();
-    TxtLinha l;
-    if (perfis_pode_dispensar() && at && at->nome[0])
-      snprintf(dica, sizeof dica,
-               i18n("Setas: mover  ·  OK: entrar  ·  Voltar: seguir como %s"), at->nome);
-    else
-      snprintf(dica, sizeof dica, "%s", i18n("Setas: mover  ·  OK: entrar"));
-    l = txt_linha(TXT_CAPTION, dica, 172, 175, 186, 255);
-    txt_desenhar_alpha(l, (NV_TELA_W - l.w) * 0.5f, PS_DICA_Y, a); }
-
+  // No bottom hint line: the owner asked for a clean screen. (There used to be
+  // a "arrows move, OK enters" hint here.)
   if (animPin > 0.004f) desenhaPin();
 }
 

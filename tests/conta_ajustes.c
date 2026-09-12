@@ -62,7 +62,9 @@ int main(void) {
   confere("hideUnreleasedContent:true",                   ajustes_ocultar_nao_lancados(), 1);
   confere("continueWatchingEnabled:false",                ajustes_cw_ligado(), 0);
   confere("blurUnwatchedEpisodes:true",                   ajustes_desfocar_nao_assistidos(), 1);
-  confere("detailPageTrailerButtonEnabled:false",         ajustes_botao_trailer(), 0);
+  // detail_page_trailer_button_enabled still arrives in the blob but no longer
+  // maps to any option: it must be ignored like any unknown key (see the
+  // "chave_que_este_app_nao_conhece" case below).
   confere("cardDepthEnabled:false",                       ajustes_profundidade(), 0);
 
   printf("\ncollapseSidebar:true = \"Recolhida\" (indice 0):\n");

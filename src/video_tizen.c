@@ -602,6 +602,18 @@ static void lerFaixas(void) {
   }
   printf("[video] faixas: %d audio, %d legenda\n", nAudio, nLeg);
   fflush(stdout);
+  // Applies the audio preference in force (account, or this TV's own). The
+  // webOS path does this in its sourceInfo handler; the Tizen path never did,
+  // so the firmware default (track 0) always won and the account preference
+  // looked ignored. Same shared picker as there (ling_indice_audio): primary,
+  // then secondary, exact before family match.
+  if (nAudio > 1) {
+    const char *tags[NV_FAIXA_MAX];
+    int t, i;
+    for (t = 0; t < nAudio; t++) tags[t] = faixaAudio[t].idioma;
+    i = ling_indice_audio(tags, nAudio);
+    if (i >= 0) video_escolher_audio(i);
+  }
 }
 
 // Le o cabecalho do Matroska pela rede para descobrir onde comecam os creditos.

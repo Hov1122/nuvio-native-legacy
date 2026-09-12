@@ -2638,23 +2638,9 @@ void home_desenhar(Uint32 agora) {
             }
           }
 
-          // Feedback progressivo do gesto, sem duplicar o menu contextual. A
-          // barra aparece somente enquanto o mesmo item esta sob pressao;
-          // atingido o limiar, ctxmenu ja foi aberto e a soltura e consumida.
-          if (okPressionando && okHold > 0.0f &&
-              foco_pode_pressao_longa() && focus_indice(&foco, r, c)) {
-            float bx = px + NV_HOME_TEXT_GUTTER;
-            float bw = w - NV_HOME_TEXT_GUTTER * 2.0f;
-            GfxRect trilho = { bx, py + h - 12.0f, bw, 4.0f };
-            gfx_cor(trilho, 0.5f, 0.18f, 0.19f, 0.22f, 0.92f);
-            gfx_cor((GfxRect){ bx, trilho.y, bw * okHold, trilho.h },
-                    0.5f, 0.92f, 0.93f, 0.96f, 1.0f);
-            TxtLinha dica = txt_linha(TXT_MINI,
-                                      okHold >= 1.0f ? "Solte para abrir opções"
-                                                     : "Segure para opções",
-                                      225, 228, 235, 255);
-            txt_desenhar_alpha(dica, bx, py + h - 38.0f, 0.92f);
-          }
+          // No hold feedback here by request: the 700 ms hold still opens the
+          // card menu, silently. (The trigger lives in home_atualizar; this
+          // block only ever drew the filling bar and the hint.)
         }
       }
     }

@@ -638,26 +638,23 @@ static int aoEvento(LSHandle *h, LSMessage *m, void *u) {
     printf("[video] faixas: audio=%d legenda=%d atmos=%d\n", nAudio, nLeg, vidAtmos);
     fflush(stdout);
 
-    // Escolhe o audio no idioma preferido, se houver um e se o arquivo o
-    // tiver. Sem preferencia, ou sem faixa correspondente, NAO se mexe: a
-    // escolha do pipeline (faixa 0) e melhor que uma trocada por chute — quem
-    // quer outra abre a folha de faixas, que continua listando todas.
-    { const char *pref = ling_audio();
-      if (pref[0] && nAudio > 1) {
-        int i;
-        for (i = 0; i < nAudio; i++) {
-          if (!faixaAudio[i].idioma[0] || !ling_casa(faixaAudio[i].idioma, pref)) continue;
-          printf("[video] audio preferido: %s (faixa %d de %d)\n",
-                 ling_nome(faixaAudio[i].idioma), i + 1, nAudio);
-          fflush(stdout);
-          // Direto, e nao por audioAoCarregar: aquele campo e da RECUPERACAO
-          // (pipeline morto) e sobrescreve-lo aqui apagaria a faixa que a
-          // pessoa tinha escolhido antes da queda. O sourceInfo chega com o
-          // pipeline ja carregado, entao o selectTrack vale agora.
-          if (audioAoCarregar < 0) video_escolher_audio(i);
-          break;
-        }
-      } }
+    // Escolhe o audio na preferencia em vigor (conta, ou desta TV), se o
+    // arquivo o tiver. A ordem — primario, depois secundario, exato antes de
+    // aproximado — e a do web (findStartupPreferredAudioOption) e mora em
+    // ling_indice_audio, que os dois alvos usam. Sem preferencia, ou sem faixa
+    // correspondente, NAO se mexe: a escolha do pipeline (faixa 0) e melhor
+    // que uma trocada por chute — quem quer outra abre a folha de faixas.
+    if (nAudio > 1) {
+      const char *tags[NV_FAIXA_MAX];
+      int t, i;
+      for (t = 0; t < nAudio; t++) tags[t] = faixaAudio[t].idioma;
+      i = ling_indice_audio(tags, nAudio);
+      // Direto, e nao por audioAoCarregar: aquele campo e da RECUPERACAO
+      // (pipeline morto) e sobrescreve-lo aqui apagaria a faixa que a
+      // pessoa tinha escolhido antes da queda. O sourceInfo chega com o
+      // pipeline ja carregado, entao o selectTrack vale agora.
+      if (i >= 0 && audioAoCarregar < 0) video_escolher_audio(i);
+    }
 
     // O PIPELINE NAO DA IDIOMA DE LEGENDA. Medido nesta TV, num arquivo com 43
     // legendas: o audioTrackInfo vem com "en"/"es"/"fr"/"it" e TODA entrada do

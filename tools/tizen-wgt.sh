@@ -68,8 +68,22 @@ if find "$ESTAGIO" -name '*.txt' | grep -q .; then
 fi
 
 # .wgt e um zip com config.xml na raiz. Sem assinatura, de proposito.
+# `zip` pode faltar no Linux; a queda para python3 (stdlib zipfile) monta o mesmo
+# pacote com os arquivos na RAIZ do zip, como o Tizen espera.
 rm -f "$NOME.wgt"
-( cd "$ESTAGIO" && zip -q -r -X "../../$NOME.wgt" . )
+if command -v zip >/dev/null 2>&1; then
+  ( cd "$ESTAGIO" && zip -q -r -X "../../$NOME.wgt" . )
+else
+  python3 - "$ESTAGIO" "$NOME.wgt" <<'PY'
+import os, sys, zipfile
+src, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for r, _, fs in os.walk(src):
+        for f in fs:
+            p = os.path.join(r, f)
+            z.write(p, os.path.relpath(p, src))
+PY
+fi
 echo "tizen-wgt.sh: $NOME.wgt ($(du -h "$NOME.wgt" | cut -f1)) — SEM ASSINATURA"
 
 if command -v tizen >/dev/null && [ -n "${TIZEN_PERFIL:-}" ]; then

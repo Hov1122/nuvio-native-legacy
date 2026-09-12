@@ -7,44 +7,57 @@
 // codigos de tres letras (ISO 639-2) alem dos de duas, porque MKV de release
 // etiqueta quase sempre com os de tres. Estava dentro de video.c, privada;
 // addons.c mantinha uma versao propria com tres idiomas. Uma so agora.
-static const struct { const char *cod, *nome; } NOMES[] = {
-  { "pt", "Português" },  { "pob", "Português (BR)" }, { "por", "Português" },
-  { "pt-br", "Português (BR)" }, { "ptb", "Português (BR)" }, { "br", "Português (BR)" },
-  { "en", "Inglês" },     { "eng", "Inglês" },
-  { "es", "Espanhol" },   { "spa", "Espanhol" }, { "esp", "Espanhol" },
-  { "fr", "Francês" },    { "fre", "Francês" },  { "fra", "Francês" },
-  { "de", "Alemão" },     { "ger", "Alemão" },   { "deu", "Alemão" },
-  { "it", "Italiano" },   { "ita", "Italiano" },
-  { "ja", "Japonês" },    { "jpn", "Japonês" },
-  { "ko", "Coreano" },    { "kor", "Coreano" },
-  { "zh", "Chinês" },     { "chi", "Chinês" },   { "zho", "Chinês" },
-  { "ru", "Russo" },      { "rus", "Russo" },
-  { "ar", "Árabe" },      { "ara", "Árabe" },
-  { "hi", "Hindi" },      { "hin", "Hindi" },
-  { "nl", "Holandês" },   { "dut", "Holandês" }, { "nld", "Holandês" },
-  { "sv", "Sueco" },      { "swe", "Sueco" },
-  { "no", "Norueguês" },  { "nor", "Norueguês" },
-  { "da", "Dinamarquês" },{ "dan", "Dinamarquês" },
-  { "fi", "Finlandês" },  { "fin", "Finlandês" },
-  { "pl", "Polonês" },    { "pol", "Polonês" },
-  { "tr", "Turco" },      { "tur", "Turco" },
-  { "he", "Hebraico" },   { "heb", "Hebraico" },
-  { "th", "Tailandês" },  { "tha", "Tailandês" },
-  { "cs", "Tcheco" },     { "cze", "Tcheco" },
-  { "el", "Grego" },      { "gre", "Grego" },
-  { "hu", "Húngaro" },    { "hun", "Húngaro" },
-  { "ro", "Romeno" },     { "rum", "Romeno" },
-  { "uk", "Ucraniano" },  { "ukr", "Ucraniano" },
-  { "vi", "Vietnamita" }, { "vie", "Vietnamita" },
-  { "id", "Indonésio" },  { "ind", "Indonésio" },
+static const struct { const char *cod, *pt, *en; } NOMES[] = {
+  { "pt", "Português", "Portuguese" },
+  { "pob", "Português (BR)", "Portuguese (BR)" },
+  { "por", "Português", "Portuguese" },
+  { "pt-br", "Português (BR)", "Portuguese (BR)" },
+  { "ptb", "Português (BR)", "Portuguese (BR)" },
+  { "br", "Português (BR)", "Portuguese (BR)" },
+  { "en", "Inglês", "English" },     { "eng", "Inglês", "English" },
+  { "es", "Espanhol", "Spanish" },   { "spa", "Espanhol", "Spanish" },
+  { "esp", "Espanhol", "Spanish" },
+  { "fr", "Francês", "French" },     { "fre", "Francês", "French" },
+  { "fra", "Francês", "French" },
+  { "de", "Alemão", "German" },      { "ger", "Alemão", "German" },
+  { "deu", "Alemão", "German" },
+  { "it", "Italiano", "Italian" },   { "ita", "Italiano", "Italian" },
+  { "ja", "Japonês", "Japanese" },   { "jpn", "Japonês", "Japanese" },
+  { "ko", "Coreano", "Korean" },     { "kor", "Coreano", "Korean" },
+  { "zh", "Chinês", "Chinese" },     { "chi", "Chinês", "Chinese" },
+  { "zho", "Chinês", "Chinese" },
+  { "ru", "Russo", "Russian" },      { "rus", "Russo", "Russian" },
+  { "ar", "Árabe", "Arabic" },       { "ara", "Árabe", "Arabic" },
+  { "hi", "Hindi", "Hindi" },        { "hin", "Hindi", "Hindi" },
+  { "nl", "Holandês", "Dutch" },     { "dut", "Holandês", "Dutch" },
+  { "nld", "Holandês", "Dutch" },
+  { "sv", "Sueco", "Swedish" },      { "swe", "Sueco", "Swedish" },
+  { "no", "Norueguês", "Norwegian" },{ "nor", "Norueguês", "Norwegian" },
+  { "da", "Dinamarquês", "Danish" }, { "dan", "Dinamarquês", "Danish" },
+  { "fi", "Finlandês", "Finnish" },  { "fin", "Finlandês", "Finnish" },
+  { "pl", "Polonês", "Polish" },     { "pol", "Polonês", "Polish" },
+  { "tr", "Turco", "Turkish" },      { "tur", "Turco", "Turkish" },
+  { "he", "Hebraico", "Hebrew" },    { "heb", "Hebraico", "Hebrew" },
+  { "th", "Tailandês", "Thai" },     { "tha", "Tailandês", "Thai" },
+  { "cs", "Tcheco", "Czech" },       { "cze", "Tcheco", "Czech" },
+  { "el", "Grego", "Greek" },        { "gre", "Grego", "Greek" },
+  { "hu", "Húngaro", "Hungarian" },  { "hun", "Húngaro", "Hungarian" },
+  { "ro", "Romeno", "Romanian" },    { "rum", "Romeno", "Romanian" },
+  { "uk", "Ucraniano", "Ukrainian" },{ "ukr", "Ucraniano", "Ukrainian" },
+  { "vi", "Vietnamita", "Vietnamese" }, { "vie", "Vietnamita", "Vietnamese" },
+  { "id", "Indonésio", "Indonesian" },  { "ind", "Indonésio", "Indonesian" },
 };
 #define NOMES_N ((int)(sizeof NOMES / sizeof *NOMES))
+
+static int interfaceEn;
+void ling_interface_ingles(int sim) { interfaceEn = sim ? 1 : 0; }
 
 const char *ling_nome(const char *c) {
   int i;
   if (!c || !*c) return "";
   for (i = 0; i < NOMES_N; i++)
-    if (!strcasecmp(c, NOMES[i].cod)) return NOMES[i].nome;
+    if (!strcasecmp(c, NOMES[i].cod))
+      return interfaceEn ? NOMES[i].en : NOMES[i].pt;
   // Sem nome na tabela, devolve o CODIGO EM MAIUSCULAS — e o que o app web faz
   // quando nao sabe nomear ("ENG", "POR"). Mostrar o codigo diz alguma coisa;
   // cair em "Legenda 3" nao diz nada.
@@ -101,12 +114,18 @@ int ling_casa(const char *codigo, const char *pref) {
 
 // ------------------------------------------------------------ preferencias
 
-static char contaLeg[16], contaLeg2[16], contaAud[16];
+static char contaLeg[16], contaLeg2[16], contaAud[16], contaAud2[16];
 static char localLeg[16], localAud[16];
+// Device locale base ("en", "pt") and current title original language, for the
+// web "system"/"device" and "original" audio sentinels. See the header.
+static char aparelho[8], tituloOrig[8];
 
 // As sentinelas do web viram vazio (= sem filtro) ou "none" (= nenhuma).
-// "DEVICE"/"DEFAULT"/"ORIGINAL" dizem "deixe o arquivo decidir", que deste lado
-// e exatamente nao filtrar.
+// "DEFAULT" diz "deixe o arquivo decidir", que deste lado e exatamente nao
+// filtrar. "DEVICE"/"SYSTEM"/"ORIGINAL" NAO colapsam aqui: o web resolve cada
+// uma para um idioma de verdade (dispositivo, original do titulo) e este lado
+// faz o mesmo em resolver_audio() — colapsar seria jogar fora a preferencia
+// que a pessoa configurou.
 static void guardar(char *dest, size_t n, const char *v) {
   if (!v || !*v) { dest[0] = 0; return; }
   if (!strcasecmp(v, "off") || !strcasecmp(v, "device") ||
@@ -114,10 +133,49 @@ static void guardar(char *dest, size_t n, const char *v) {
       !strcasecmp(v, "system") || !strcmp(v, "*")) { dest[0] = 0; return; }
   snprintf(dest, n, "%s", v);
 }
+static void guardarAudio(char *dest, size_t n, const char *v) {
+  if (!v || !*v) { dest[0] = 0; return; }
+  if (!strcasecmp(v, "off") || !strcasecmp(v, "default") ||
+      !strcasecmp(v, "none") || !strcasecmp(v, "forced") ||
+      !strcmp(v, "*")) { dest[0] = 0; return; }
+  snprintf(dest, n, "%s", v);
+}
 
 void ling_conta_legenda(const char *v)  { guardar(contaLeg,  sizeof contaLeg,  v); }
 void ling_conta_legenda2(const char *v) { guardar(contaLeg2, sizeof contaLeg2, v); }
-void ling_conta_audio(const char *v)    { guardar(contaAud,  sizeof contaAud,  v); }
+void ling_conta_audio(const char *v)    { guardarAudio(contaAud,  sizeof contaAud,  v); }
+void ling_conta_audio2(const char *v)   { guardarAudio(contaAud2, sizeof contaAud2, v); }
+// Keeps the base language only: "en-US" -> "en", "pt_BR" -> "pt". The family
+// match in ling_casa would get there anyway, but the startup log reads better
+// with the short code, and comparing short codes keeps the picker exact pass
+// honest.
+static void guardarBase(char *dest, size_t n, const char *v) {
+  size_t k = 0;
+  dest[0] = 0;
+  if (!v) return;
+  while (v[k] && v[k] != '-' && v[k] != '_' && v[k] != ' ' && v[k] != '.' &&
+         k + 1 < n) {
+    char c = v[k];
+    dest[k] = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    k++;
+  }
+  dest[k] = 0;
+  if (!strcmp(dest, "c") || !strcmp(dest, "posix")) dest[0] = 0;
+}
+void ling_aparelho_idioma(const char *locale) {
+  guardarBase(aparelho, sizeof aparelho, locale);
+  printf("[linguas] idioma do aparelho: \"%s\"\n", aparelho);
+  fflush(stdout);
+}
+void ling_titulo_original(const char *lang) {
+  char antes[8];
+  snprintf(antes, sizeof antes, "%s", tituloOrig);
+  guardarBase(tituloOrig, sizeof tituloOrig, lang);
+  if (strcmp(antes, tituloOrig)) {
+    printf("[linguas] idioma original do titulo: \"%s\"\n", tituloOrig);
+    fflush(stdout);
+  }
+}
 // A escolha LOCAL preserva o "*": "Todas" e uma decisao ("nao filtre"), nao a
 // ausencia de decisao. Tratar as duas como vazio fazia escolher "Todas" cair de
 // volta na preferencia da conta — ou seja, o ajuste nao obedecia.
@@ -139,7 +197,64 @@ static const char *emVigor(const char *local, const char *conta) {
 const char *ling_legenda(void)  { return emVigor(localLeg, contaLeg); }
 // A secundaria so existe na conta: a tela oferece uma escolha, nao duas.
 const char *ling_legenda2(void) { return localLeg[0] ? "" : contaLeg2; }
-const char *ling_audio(void)    { return emVigor(localAud, contaAud); }
+// Resolves one raw account audio value to a concrete language code (or "").
+// Mirrors the web getStartupPreferredAudioLanguageTargets resolve(): device
+// and system mean the device locale, original means the title's original
+// language with the device locale as fallback. DEFAULT/off/none/forced and
+// empty all mean "no preference" — leave the file default alone.
+static const char *resolver_audio(const char *bruto) {
+  if (!bruto || !bruto[0]) return "";
+  if (!strcasecmp(bruto, "off") || !strcasecmp(bruto, "default") ||
+      !strcasecmp(bruto, "none") || !strcasecmp(bruto, "forced")) return "";
+  if (!strcasecmp(bruto, "device") || !strcasecmp(bruto, "system"))
+    return aparelho;
+  if (!strcasecmp(bruto, "original"))
+    return tituloOrig[0] ? tituloOrig : aparelho;
+  return bruto;
+}
+const char *ling_audio(void) {
+  if (localAud[0]) return localAud[0] == '*' ? "" : localAud;
+  return resolver_audio(contaAud);
+}
+const char *ling_audio2(void) {
+  if (localAud[0]) return "";
+  return resolver_audio(contaAud2);
+}
+// Web-parity startup pick. Same order as the web
+// findStartupPreferredAudioOption: primary target first (exact, then family),
+// then the secondary the same way. Anything else leaves the file default.
+int ling_indice_audio(const char * const *idiomas, int n) {
+  const char *alvos[2] = { ling_audio(), ling_audio2() };
+  int t, i, escolhido = -1;
+  const char *usado = "";
+  char lista[160] = "";
+  if (!idiomas || n < 1) return -1;
+  for (t = 0; t < 2 && escolhido < 0; t++) {
+    const char *alvo = alvos[t];
+    if (!alvo || !alvo[0]) continue;
+    for (i = 0; i < n; i++)
+      if (idiomas[i] && idiomas[i][0] && !strcasecmp(idiomas[i], alvo)) break;
+    if (i >= n)
+      for (i = 0; i < n; i++)
+        if (idiomas[i] && idiomas[i][0] && ling_casa(idiomas[i], alvo)) break;
+    if (i < n) { escolhido = i; usado = alvo; }
+  }
+  for (i = 0; i < n && strlen(lista) + 10 < sizeof lista; i++) {
+    char tag[12] = "";
+    if (idiomas[i] && idiomas[i][0]) snprintf(tag, sizeof tag, "%s", idiomas[i]);
+    else snprintf(tag, sizeof tag, "-");
+    snprintf(lista + strlen(lista), sizeof lista - strlen(lista),
+             "%s%s", i ? " " : "", tag);
+  }
+  if (escolhido >= 0)
+    printf("[linguas] audio alvos=\"%s\",\"%s\" faixas=[%s] -> %d (%s)\n",
+           alvos[0], alvos[1], lista, escolhido, usado);
+  else
+    printf("[linguas] audio alvos=\"%s\",\"%s\" faixas=[%s] -> padrao\n",
+           alvos[0], alvos[1], lista);
+  fflush(stdout);
+  return escolhido;
+}
 
 // ------------------------------------------------------------ lista da UI
 

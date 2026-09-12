@@ -22,6 +22,8 @@
 #include "detail.h"
 #include "episodios.h"
 #include "idioma.h"
+#include "linguas.h"
+#include "trailer.h"
 #include "badges.h"
 #include "marco.h"
 #include "ajustes.h"
@@ -126,6 +128,9 @@ static int temporada = 0;            // temporada ESCOLHIDA (nao a focada)
 // antes a troca de temporada arrastava o FOCO para o episodio, e com isso o
 // D-pad saia da fileira de abas: nao dava para passar da segunda temporada.
 static int    epAncora = 0;
+// One-shot: the episode row anchors at the resume/next episode on the first
+// frame that has episodes. Defined next to ancorarRetomada below.
+static int    ancoraFeita;
 // Comentarios: 0 = da SERIE, 1 = do EPISODIO. E o seletor que a referencia poe
 // sob "Avaliações do Trakt". Em filme nao existe e fica cravado em 0.
 static int comentEp = 0;
@@ -182,7 +187,9 @@ static float docFim = NV_DETP_FIM;
 // pelo caminho antigo, e "Elenco" ficaria repetindo a aba "Criador e elenco"
 // logo acima (ver detail.c:1611).
 static const char *cabecalhoDe(int r) {
-  if (ehSerie()) return NULL;
+  // Series hide every header except the trailer one: without it the row
+  // lands below the cast with no name on it.
+  if (ehSerie() && r != SEC_TRAILERS) return NULL;
   switch (r) {
     case SEC_ELENCO:   return "Elenco";
     case SEC_TRAILERS:     return "Trailers";
@@ -293,6 +300,15 @@ static void recalcularLayout(void) {
     // porque nome comprido quebra em duas ("Geneva Robertson-Dworet" na propria
     // captura do dono) e empurra o papel para baixo.
     y = baseDaAbaAtiva() + NV_DETP_EL_GAP_TRAKT;
+    // Trailers stack between the cast and the comments when present. They
+    // used to fall through to the series default (NV_DETP_EL_Y) and draw ON
+    // TOP of the avatars — focusable in theory, unreachable in practice,
+    // with OK landing on the cast instead.
+    if (secaoN(SEC_TRAILERS) > 0) {
+      topoSec[SEC_TRAILERS] = conteudoSec[SEC_TRAILERS] = y;
+      y += alturaSecao(SEC_TRAILERS) + NV_DETF_SEC_GAP;
+      if (y + NV_DETF_PAD_FIM > docFim) docFim = y + NV_DETF_PAD_FIM;
+    }
     topoSec[SEC_COMENTARIOS] = conteudoSec[SEC_COMENTARIOS] = y;
     if (secaoN(SEC_COMENTARIOS) > 0) {
       float fim = y + alturaSecao(SEC_COMENTARIOS) + NV_DETF_PAD_FIM;
@@ -493,6 +509,10 @@ void detail_abrir(const HomeItem *it) {
   marco("detail_abrir");
   item = *it;
   aberto = 1; saindo = 0; nivel = 0; botao = 0;
+  // Fresh title, fresh original language: the TMDB ficha for THIS title refills
+  // it on arrival (extras.c). Without the reset, "original" audio could answer
+  // with the previous title's language.
+  ling_titulo_original("");
   t = 0.0f; pg = 0.0f; scrollY = 0.0f; abaInfo = 0; pessoaAberta = 0;
   relFoco = 0; pedAbrir = -1; ratTemp = 0;
   idx = it->indice;
@@ -521,6 +541,7 @@ void detail_abrir(const HomeItem *it) {
         if (ci0->temporadas[k] == e0->temporada) { temporada = k; break; }
     } }
   epAncora = 0;
+  ancoraFeita = 0;   // a fileira ancora na retomada no primeiro quadro com episodios
   int cols[N_SECOES]; for (int i = 0; i < N_SECOES; i++) cols[i] = secaoColunas(i);
   focus_iniciar(&foco, N_SECOES, cols);
   memset(animFoco, 0, sizeof animFoco);
@@ -559,12 +580,15 @@ float detail_progresso(void) { return aberto ? suave(t) : 0.0f; }
 // dono relatou.
 //
 // `origem` (opcional) devolve 1 = foco, 2 = retomar, 3 = proximo, 0 = primeiro.
-static int episodioAlvo(int *temp, int *epis, int *origem) {
+// Same rule with or without the focus branch: 1 when the caller wants the
+// focused episode to win (playback, comments), 0 when it wants where the
+// owner stopped regardless of focus (the row anchor below).
+static int episodioAlvoBase(int *temp, int *epis, int *origem, int comFoco) {
   const CatItem *ci = cat_item(idx);
   const CatEp *ep = NULL;
   if (origem) *origem = 0;
 
-  if (foco.fileira == SEC_EPISODIOS) ep = cat_episodio(idx, epAbsoluto(foco.coluna));
+  if (comFoco && foco.fileira == SEC_EPISODIOS) ep = cat_episodio(idx, epAbsoluto(foco.coluna));
   if (ep) {
     if (temp) *temp = ep->temporada;
     if (epis) *epis = ep->episodio;
@@ -610,6 +634,49 @@ static int episodioAlvo(int *temp, int *epis, int *origem) {
   if (temp) *temp = ep->temporada;
   if (epis) *epis = ep->episodio;
   return 1;
+}
+
+static int episodioAlvo(int *temp, int *epis, int *origem) {
+  return episodioAlvoBase(temp, epis, origem, 1);
+}
+
+// The episode row OPENS where the owner stopped, not on S1E1: season tab of
+// the resume/next episode, scrolled and focused there. Same rule as the play
+// button (episodioAlvo without the focus branch), so the list shows what play
+// will touch. One shot on the first frame that has episodes — before that
+// there is nothing to anchor to — and cancelled the moment the owner moves
+// the season tabs themselves, so a late arrival never yanks their tab.
+static void ancorarRetomada(void) {
+  const CatItem *ci;
+  int t, e, de, n, i, abs = -1, k, achou = 0, c;
+  if (ancoraFeita || !ehSerie()) return;
+  if (cat_n_episodios(idx) < 1) return;
+  ancoraFeita = 1;
+  if (!episodioAlvoBase(&t, &e, &de, 0) || de < 2) return;
+  n = cat_n_episodios(idx);
+  for (i = 0; i < n; i++) {
+    const CatEp *ep = cat_episodio(idx, i);
+    if (ep && ep->temporada == t && ep->episodio == e) { abs = i; break; }
+  }
+  if (abs < 0) return;
+  ci = cat_item(idx);
+  if (ci)
+    for (k = 0; k < ci->nTemporadas; k++)
+      if (ci->temporadas[k] == t) { temporada = k; achou = 1; break; }
+  if (!achou) return;
+  // Column of `abs` inside its season: the anchor is relative, like the row.
+  c = 0;
+  for (i = 0; i < abs; i++) {
+    const CatEp *e2 = cat_episodio(idx, i);
+    if (e2 && e2->temporada == t) c++;
+  }
+  if (c >= epVisiveis() && epVisiveis() > 0) c = epVisiveis() - 1;
+  epAncora = c;
+  foco.colunaLembrada[SEC_EPISODIOS] = c;
+  // The tab row must agree, or the first visit there snaps back to season 1
+  // (the atualizar branch below treats a column/tab mismatch as the owner
+  // moving). Landing on the anchored tab keeps it quiet.
+  foco.colunaLembrada[SEC_TEMPORADAS] = temporada;
 }
 
 int detail_ep_foco(int *temp, int *epis) {
@@ -787,14 +854,14 @@ static int secaoN(int r) {
       }
       return n < NV_DETF_EL_MAX ? n : NV_DETF_EL_MAX;
     }
-    // Trailers, Recomendacoes, Comentarios e Detalhes so existem em FILME —
-    // na serie o mesmo conteudo vive atras das ABAS.
+    // Recomendacoes, Comentarios e Detalhes so existem em FILME — na serie o
+    // mesmo conteudo vive atras das ABAS. Trailers existem nos dois: filme
+    // le do /movie, serie do /tv/videos (extras.c).
     //
     // Estas duas ultimas eram justamente o que se perdeu ao tirar as abas do
     // filme: os dados sempre estiveram la (o log mostra "coment=8 rel=12"),
     // mas sem aba e sem secao nao havia como chegar neles.
     case SEC_TRAILERS:
-      if (ehSerie()) return 0;
       return extras_n_trailers();
     case SEC_RELACIONADOS: {
       int n;
@@ -852,6 +919,9 @@ static int nBotoes(void) { return ehSerie() ? 3 : 4; }
 enum { ACAO_PRIMARIO = 0, ACAO_LISTA = 1, ACAO_ASSISTIDO = 2, ACAO_FONTES = 3 };
 static int acaoEm(int n) {
   if (n >= 2 && ehSerie()) return n + 1;   // serie pula o olho
+  // The third circular is always sources: choosing what to play is the
+  // every-time action, and it stays one click away. Trailers live in their
+  // own row below (SEC_TRAILERS), for movies and series alike.
   return n;
 }
 
@@ -1013,6 +1083,12 @@ void detail_evento(const SDL_Event *e) {
       int alvo = id[0] ? cat_indice_por_imdb(id) : -1;
       if (alvo >= 0) pedAbrir = alvo;
       else if (id[0]) desc_pedir_titulo(id);
+    } else if (foco.fileira == SEC_TRAILERS) {
+      // OK on a trailer card plays it in the YouTube overlay (trailer.c +
+      // tools/tizen-shell.html). Invalid/empty ids are refused inside
+      // trailer_abrir, so there is nothing to check here.
+      const char *yt = extras_trailer_yt(foco.coluna);
+      if (yt && yt[0]) trailer_abrir(yt);
     } else if (foco.fileira == SEC_TEMPORADAS) {
       // Trocar de aba BUSCA a temporada. Antes so mudava o realce e a lista
       // continuava a mesma, o que fazia a aba parecer quebrada.
@@ -1142,25 +1218,14 @@ static float xItem(int r, int c) {
 // Sai cedo quando nada mudou, entao custa N comparacoes de inteiro. Mesmo
 // padrao do sincronizarFileiras() da home, pela mesma razao: quem preenche o
 // catalogo e outro fio.
-// Quantas colunas da secao aceitam FOCO. Nem sempre e o mesmo que secaoN, que
-// diz quantas se DESENHA.
-//
-// Trailers e o caso: os cards aparecem, mas nao recebem foco. Este port nao tem
-// reprodutor de YouTube, e a regra ja escrita duas vezes neste codigo — o botao
-// de trailer removido do hero, o glifo do YouTube trocado no terceiro circular
-// — e que um controle que promete o que nao cumpre e pior que a ausencia dele.
-// Pular a fileira nao esconde nada: ao descer do Elenco para os Detalhes a
-// rolagem passa por cima dos trailers e eles ficam visiveis no caminho.
+// How many columns of a section accept FOCUS. Not always the same as secaoN,
+// which says how many are DRAWN. No section currently diverges, so this is the
+// identity — kept as a function because the trailer row did diverge before,
+// and the next row that needs different focus/draw counts plugs in here.
 static int secaoColunas(int r) {
-  // TRAILERS SAO FOCAVEIS. Eles ficaram fora do foco por um tempo, pelo
-  // argumento de que este port nao toca YouTube e um controle que promete o
-  // que nao cumpre e pior que a ausencia dele — a mesma regra que tirou o botao
-  // de trailer do hero.
-  //
-  // O dono pediu o contrario, e tem razao no caso: pular a fileira inteira
-  // impede ate de PERCORRER os trailers para ler os nomes, e "nao consigo
-  // navegar nos trailers" e um defeito maior que um OK sem efeito. O card
-  // continua sem acao ao apertar OK enquanto nao houver reprodutor.
+  // Trailer cards are focusable AND actionable: OK plays them in the YouTube
+  // overlay (trailer.c + tools/tizen-shell.html). See the SEC_TRAILERS branch
+  // in the KEYUP handler above.
   return secaoN(r);
 }
 
@@ -1246,6 +1311,8 @@ void detail_atualizar(float dt, Uint32 agora) {
       }
     } }
   sincronizarColunas();
+  // Episode row opens at the resume/next episode once the list exists.
+  ancorarRetomada();
   // Solta o pedido de episodios que ficou guardado por ter chegado com outro
   // carregamento em voo.
   desc_episodios_pendente();
@@ -1270,6 +1337,9 @@ void detail_atualizar(float dt, Uint32 agora) {
     if (foco.coluna != temporada) {
       temporada = foco.coluna;
       irParaTemporada(temporada, 0);
+      // The owner took the tabs: a late episode arrival must not yank them
+      // back to the resume season.
+      ancoraFeita = 1;
     }
   } else if (foco.fileira == SEC_EPISODIOS) {
     // Andar pelos episodios move a ancora junto: voltando para as abas, a
@@ -2232,16 +2302,21 @@ static void desenhaAbaInfo(float x, float y, int i, float f, float a) {
 // cinza. A miniatura vem de img.youtube.com por URL previsivel, e tex_obter
 // baixa e cacheia sozinho — nao ha codigo de rede aqui.
 //
-// NAO E FOCAVEL, e isso e decisao, nao pendencia: este app nao tem reprodutor
-// de YouTube. A mesma regra ja tirou o botao de trailer do hero (detail.c) e o
-// glifo do YouTube do terceiro circular (gfx.c) — um controle que promete o que
-// nao cumpre e pior que a ausencia dele. O card entra na composicao para a
-// pagina nao mentir sobre o que o filme tem; abrir, nao abre.
-static void desenhaTrailer(float x, float y, int c, float a) {
+// Focusable, and OK plays the trailer in the YouTube overlay (trailer.c +
+// tools/tizen-shell.html). Same entry point as the hero trailer button.
+static void desenhaTrailer(float x, float y, int c, float f, float a) {
   const char *mini = extras_trailer_miniatura(c);
   GfxRect v = { x, y, NV_DETF_TR_W, NV_DETF_TR_VIDEO_H };
   float raio = NV_DETF_TR_RAIO / NV_DETF_TR_VIDEO_H;   // fracao do MENOR lado
   GLuint tex = (mini && mini[0]) ? tex_obter_larg(mini, NV_DETF_TR_W) : 0;
+
+  // Focus ring on the thumbnail, like the episode cards: without it the row
+  // is navigable but the cursor is invisible.
+  if (f > 0.01f) {
+    GfxRect anel = { v.x - NV_DETP_ANEL, v.y - NV_DETP_ANEL,
+                     v.w + NV_DETP_ANEL * 2, v.h + NV_DETP_ANEL * 2 };
+    gfx_cor(anel, raio, 1, 1, 1, f * a);
+  }
 
   if (tex) {
     gfx_tex_aspect_atual = tex_aspecto(mini);
@@ -2906,6 +2981,7 @@ static void desenhaSecao(int r, float a, Uint32 agora) {
     // este switch e quem escolhe onde DESENHAR. Eram dois numeros para o mesmo
     // lugar, e so um deles tinha sido corrigido.
     case SEC_COMENTARIOS: y = conteudoSec[r]; break;
+    case SEC_TRAILERS:     y = conteudoSec[r]; break;
     default:             y = NV_DETP_EL_Y;   break;
   }
   y -= scrollY;
@@ -2927,7 +3003,7 @@ static void desenhaSecao(int r, float a, Uint32 agora) {
   // que a fileira e, e o rotulo acima dela repetia a palavra duas vezes em
   // linhas seguidas. No FILME cada secao continua carregando o proprio nome,
   // porque la nao existe a barra de abas para dizer o que e o que.
-  { const char *cab = ehSerie() ? NULL : cabecalhoDe(r);
+  { const char *cab = cabecalhoDe(r);
     if (cab) {
       TxtLinha lc = txt_linha(TXT_HEADLINE, cab, 245, 248, 255, 255);
       txt_desenhar_alpha(lc, NV_DETP_X, y - lc.h - NV_DETF_CAB_GAP, a);
@@ -2958,7 +3034,7 @@ static void desenhaSecao(int r, float a, Uint32 agora) {
         }
         break;
       }
-      case SEC_TRAILERS: desenhaTrailer(x, y, c, a); break;
+      case SEC_TRAILERS: desenhaTrailer(x, y, c, f, a); break;
       // Reaproveitam o desenho que ja servia as ABAS da serie: e o mesmo
       // conteudo, so que agora numa secao propria em vez de atras de uma aba.
       case SEC_RELACIONADOS:

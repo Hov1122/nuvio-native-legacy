@@ -412,19 +412,8 @@ void ctx_desenhar(Uint32 agora) {
   float a = anim, alt, x, y;
   int i, nEstados = 1;
   (void)agora;
-  if (!aberto && holdAtivo) {
-    float p = (float)(SDL_GetTicks() - holdDesde) / (float)NV_HOLD_MS;
-    TxtLinha t;
-    if (p > 1.0f) p = 1.0f;
-    t = txt_linha(TXT_CAPTION2,
-                  p >= 1.0f ? "Solte para abrir opções" : "Segure OK para opções",
-                  220, 224, 232, 255);
-    txt_desenhar_alpha(t, (NV_TELA_W - t.w) * 0.5f, NV_TELA_H - 124.0f, 0.94f);
-    gfx_cor((GfxRect){ (NV_TELA_W - 420.0f) * 0.5f, NV_TELA_H - 82.0f,
-                       420.0f, 8.0f }, 4.0f, 0.18f, 0.2f, 0.23f, 0.96f);
-    gfx_cor((GfxRect){ (NV_TELA_W - 420.0f) * 0.5f, NV_TELA_H - 82.0f,
-                       420.0f * p, 8.0f }, 4.0f, 0.78f, 0.84f, 0.96f, 0.98f);
-  }
+  // No hold feedback here either (see home.c): the menu still opens on the
+  // 700 ms hold, silently.
   if (a < 0.01f) return;
   ci = indiceAtual() >= 0 ? cat_item(indiceAtual()) : NULL;
   if (!ci) return;

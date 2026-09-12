@@ -30,9 +30,14 @@ int main(void) {
   ok("glg casa com glg",  ling_casa("glg", "glg"));
   ok("glg nao casa cat",  !ling_casa("glg", "cat"));
 
-  // Nomes para a tela.
+  // Nomes para a tela, no idioma da interface.
   ok("nome de pob", !strcmp(ling_nome("pob"), "Português (BR)"));
   ok("nome de spa", !strcmp(ling_nome("spa"), "Espanhol"));
+  ling_interface_ingles(1);
+  ok("nome de pob em ingles", !strcmp(ling_nome("pob"), "Portuguese (BR)"));
+  ok("nome de eng em ingles", !strcmp(ling_nome("eng"), "English"));
+  ok("nome de spa em ingles", !strcmp(ling_nome("spa"), "Spanish"));
+  ling_interface_ingles(0);
   // Sem nome na tabela, o CODIGO em maiusculas — diz mais que "Legenda 3".
   ok("nome de glg", !strcmp(ling_nome("glg"), "GLG"));
 
@@ -48,6 +53,45 @@ int main(void) {
 
   // "Todas" na tela e "*" no codigo, e tem de significar SEM FILTRO.
   ling_local_legenda("*");      ok("* = sem filtro",       !ling_legenda()[0]);
+
+  // Audio secundario da conta: vale quando o primario nao esta no arquivo.
+  ling_local_audio("");
+  ling_aparelho_idioma("");
+  ling_titulo_original("");
+  ling_conta_audio("pt");
+  ling_conta_audio2("en");
+  ok("audio primario pt",   !strcmp(ling_audio(), "pt"));
+  ok("audio secundario en", !strcmp(ling_audio2(), "en"));
+  { const char *tags[] = { "por", "eng" };
+    ok("primario ganha", ling_indice_audio(tags, 2) == 0); }
+  { const char *tags[] = { "eng", "spa" };
+    ok("secundario quando primario falta", ling_indice_audio(tags, 2) == 0); }
+  { const char *tags[] = { "spa", "fra" };
+    ok("sem nenhum, padrao", ling_indice_audio(tags, 2) == -1); }
+  { const char *tags[] = { "eng", "por" };
+    ok("primario aproximado ganha de secundario exato",
+       ling_indice_audio(tags, 2) == 1); }
+
+  // Sentinelas resolvidas como no web: sistema/dispositivo viram o aparelho,
+  // original vira o titulo (e sem titulo cai no aparelho).
+  ling_conta_audio("DEVICE"); ling_conta_audio2("");
+  ling_aparelho_idioma("en-US");
+  ok("device vira aparelho", !strcmp(ling_audio(), "en"));
+  ling_conta_audio("ORIGINAL"); ling_titulo_original("ja");
+  ok("original vira titulo", !strcmp(ling_audio(), "ja"));
+  ling_titulo_original("");
+  ok("original sem titulo cai no aparelho", !strcmp(ling_audio(), "en"));
+  ling_conta_audio("DEFAULT");
+  ok("default continua sem filtro", !ling_audio()[0]);
+  ling_conta_audio("DEVICE");
+  { const char *tags[] = { "por", "eng" };
+    ok("device/en escolhe eng", ling_indice_audio(tags, 2) == 1); }
+
+  // Escolha local vence ate sentinela resolvida, e esconde a secundaria.
+  ling_local_audio("pt");
+  ok("local vence device",     !strcmp(ling_audio(), "pt"));
+  ok("secundario some com local", !ling_audio2()[0]);
+  ling_local_audio("");
 
   if (falhas) { printf("%d falha(s)\n", falhas); return 1; }
   printf("linguas ok\n");

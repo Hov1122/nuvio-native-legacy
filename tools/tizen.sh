@@ -115,6 +115,30 @@ if [ -n "${NUVIO_LOG_URL:-}" ]; then
   echo "tizen.sh: log sera enviado para $NUVIO_LOG_URL"
 fi
 
+# TRAILER RELAY OPCIONAL (YouTube 153: file:// nao tem Origin/Referer e o
+# firmware nao deixa a pagina inventar um). Com a URL de um youtube-proxy.html
+# hospedado em https (tools/youtube-proxy.html, byte-identico ao do app web),
+# o overlay abre os trailers por ele e o YouTube recebe origem valida. Sem a
+# URL, valem os embeds diretos (proximos do 153 nesta TV).
+# Fonte: NUVIO_YOUTUBE_RELAY_URL no ambiente, ou YOUTUBE_RELAY_URL no mesmo
+# local.properties das outras chaves. Full URL do ARQUIVO, https.
+RELAY="${NUVIO_YOUTUBE_RELAY_URL:-}"
+if [ -z "$RELAY" ]; then
+  PROP_RELAY="${NUVIO_PROPERTIES:-$(cd "$(dirname "$0")/../.." && pwd)/NuvioWeb-0.3.38-beta/local.properties}"
+  [ -f "$PROP_RELAY" ] && RELAY=$(sed -n "s/^YOUTUBE_RELAY_URL=//p" "$PROP_RELAY" | head -1 | tr -d '\r')
+fi
+if [ -n "$RELAY" ]; then
+  # & e | sao especiais para o sed; URL com query os teria.
+  RELAY_ESC=$(printf '%s' "$RELAY" | sed 's/[&|]/\\&/g')
+  if [ "$SHELL_USADO" = "tools/tizen-shell.html" ]; then
+    SHELL_USADO="$SAIDA/shell-com-relay.html"
+    sed "s|@NUVIO_YOUTUBE_RELAY_URL@|${RELAY_ESC}|" tools/tizen-shell.html > "$SHELL_USADO"
+  else
+    sed -i "s|@NUVIO_YOUTUBE_RELAY_URL@|${RELAY_ESC}|" "$SHELL_USADO"
+  fi
+  echo "tizen.sh: trailer relay $RELAY"
+fi
+
 eval emcc src/*.c -o "$SAIDA/index.html" -O2 "$ENV_D" \
   -sWASM_BIGINT=0 \
   -sUSE_SDL=2 -sUSE_SDL_IMAGE=2 -sUSE_SDL_TTF=2 \
