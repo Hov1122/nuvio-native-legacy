@@ -1014,6 +1014,9 @@ static void sincronizarFileiras(void) {
     // esvazia, tira. E o que renderModernHomeLayout faz quando
     // computeContinueWatchingRenderState devolve a fileira desligada.
     if (!strcmp(cf->chave, "continue_watching") && !ajustes_cw_ligado()) continue;
+    // Sem Trakt nao ha feed social: a fileira "Entre amigos" nao e montada,
+    // nem mesmo quando a ordem salva na conta ainda a lista.
+    if (!strcmp(cf->chave, "social_activity")) continue;
     snprintf(fileiras[destino].titulo, sizeof fileiras[destino].titulo, "%s", cf->titulo);
     // "Continuar assistindo" e a unica landscape: e o
     // `continueWatchingCardStyle: "card"` do perfil. Todo o resto e poster 2:3.
@@ -1134,16 +1137,7 @@ static void sincronizarFileiras(void) {
       s->stackN=s->n;s->n=1;s->verTudo=0;
     }
   }
-  int socialExiste=0;
-  for(int i=0;i<destino;i++)if(fileiras[i].tipo==FILEIRA_SOCIAL)socialExiste=1;
-  if(!socialExiste && destino<MAX_FIL) {
-    int pos=destino>0?1:0;
-    memmove(fileiras+pos+1,fileiras+pos,(destino-pos)*sizeof *fileiras);
-    Fileira *s=&fileiras[pos];memset(s,0,sizeof *s);
-    s->tipo=FILEIRA_SOCIAL;s->ini=-1;s->n=1;
-    snprintf(s->titulo,sizeof s->titulo,"Entre amigos");
-    snprintf(s->chave,sizeof s->chave,"social_activity");destino++;
-  }
+
   // Um retorno do player e contexto, nao catalogo: entra acima das fileiras e
   // desaparece quando nao existe sessao incompleta. Nao duplica dados nem faz
   // rede; aponta para o item que o player acabou de atualizar em memoria.
@@ -2311,7 +2305,7 @@ void home_desenhar(Uint32 agora) {
             if(f>.01f)gfx_rect(b,0,GFX_ANEL,0,.008f,0,.055f,.95f,.93f,.99f,f);
             txt_desenhar(txt_linha_corta(TXT_CALLOUT,"Entre amigos",240,234,248,255,w-48),px+24,py+24);
             txt_desenhar(txt_linha_corta(TXT_CAPTION,"Nenhuma atividade disponível agora.",195,183,211,255,w-48),px+24,py+91);
-            txt_desenhar(txt_linha_corta(TXT_CAPTION,"Siga pessoas no Trakt para descobrir mais.",195,183,211,255,w-48),px+24,py+126);
+            txt_desenhar(txt_linha_corta(TXT_CAPTION,"Conecte uma conta para descobrir mais.",195,183,211,255,w-48),px+24,py+126);
             txt_desenhar(txt_linha_corta(TXT_CAPTION,"OK · Conferir conexão",240,231,250,255,w-48),px+24,py+h-50);
             if(foco.fileira==r)temItemFoco=0;
             continue;
@@ -2362,7 +2356,7 @@ void home_desenhar(Uint32 agora) {
             txt_desenhar(titulo,tx,conteudoTopo+92.0f);
             TxtLinha ep=txt_linha_corta(TXT_MINI,cItem->temporada?cItem->direcao:i18n("Filme"),181,185,196,255,tw);
             txt_desenhar(ep,tx,conteudoTopo+130.0f);
-            TxtLinha fonte=txt_linha_corta(TXT_MINI,cItem->provNome[0]?cItem->provNome:"Trakt",155,161,174,255,tw);
+            TxtLinha fonte=txt_linha_corta(TXT_MINI,cItem->provNome[0]?cItem->provNome:"Conta",155,161,174,255,tw);
             txt_desenhar(fonte,tx,conteudoBase-14.0f);
             if(f>.1f){TxtLinha ver=txt_linha(TXT_MINI,"Ver perfil",235,237,244,255);txt_desenhar_alpha(ver,tx,conteudoBase-40.0f,f);}
             continue;
@@ -2393,6 +2387,33 @@ void home_desenhar(Uint32 agora) {
           // Com o teto unico de 640 cada poster custava 2,4 MB e o cache
           // estourava com ~40 texturas, despejando o que ainda estava na tela.
           GLuint t = caminho ? tex_obter_larg(caminho, w) : 0;
+          // O retrato segura o lugar enquanto a deitada carrega: ao abrir, o
+          // caminho troca para a arte deitada (URL nova, ainda decodificando)
+          // e sem isto o cartao piscava "Arte indisponivel" no meio da
+          // animacao — o relato. So quando a atual falta, para nao enfileirar
+          // decode a toa; o aspecto abaixo acompanha quem ganhou.
+          const char *usada = caminho;
+          if (!t && caminho && caminho[0]) {
+            const char *retrato = arte_por_identidade(idxCat, 0);
+            if (retrato && retrato[0] && strcmp(retrato, caminho)) {
+              t = tex_obter_larg(retrato, w);
+              if (t) usada = retrato;
+            }
+            // Arte morta (404), reserva viva: poster que nao decodifica com
+            // backdrop valido — o caso "retrato vazio, deitado carrega". So
+            // quando o cache ja decretou FALHOU; carregando mostra esqueleto.
+            if (!t && tex_falhou(caminho) && cItem) {
+              const char *reserva = NULL;
+              if (cItem->poster[0] && strcmp(cItem->poster, caminho))
+                reserva = cItem->poster;
+              else if (cItem->backdrop[0] && strcmp(cItem->backdrop, caminho))
+                reserva = cItem->backdrop;
+              if (reserva) {
+                t = tex_obter_larg(reserva, w);
+                if (t) usada = reserva;
+              }
+            }
+          }
           // ANEL DE FOCO: 4 px de #FFFFFF, POR FORA da arte.
           //
           // Era 2 px de #f5f5f5, tirado do `box-shadow` do app WEB. MEDIDO no
@@ -2431,7 +2452,7 @@ void home_desenhar(Uint32 agora) {
             // Alem de nao existir la, era o pior tipo de animacao para esta
             // GPU: obrigava a redesenhar a fileira inteira em todo quadro para
             // sempre, e o custo dominante aqui e fill rate.
-            gfx_tex_aspect_atual = tex_aspecto(caminho);
+            gfx_tex_aspect_atual = tex_aspecto(usada);
             gfx_rect(card, t, GFX_CARD, f, 0.0f, 0.0f,
                      raio, 0, 0, 0, 1);
             gfx_tex_aspect_atual = 0.0f;

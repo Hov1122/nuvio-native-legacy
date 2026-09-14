@@ -1,4 +1,5 @@
 #include "descoberta.h"
+#include "nuvem.h"
 #include "extras.h"
 #include "idioma.h"
 #include "ajustes.h"
@@ -11,7 +12,7 @@
 #include "addons.h"
 #include "rede.h"
 #include "js.h"
-#include "trakt.h"
+#include "simkl.h"
 #include "progresso.h"
 #include <stdio.h>
 #include <string.h>
@@ -1027,11 +1028,12 @@ static void *fioCatalogo(void *u) {
 }
 
 // "Continuar assistindo" a partir do progresso local (progresso.c), no mesmo
-// formato que trakt_continuar devolve: imdb (composto em serie), tipo,
+// formato que as pernas remotas devolvem: imdb (composto em serie), tipo,
 // porcentagem, temporada/episodio — e o resto vem do Cinemeta pelo mesmo
 // enfeite. Mais recente primeiro (prog_ler ja ordena). Entra o que esta entre
 // 1% e 90%, os mesmos limites de home_registrar_retorno; titulo terminado nao
 // e "continuar". O proximo episodio de uma serie terminada fica para depois.
+#define CONT_MAX 8
 static int continuarLocal(CatItem *saida, int max) {
   static ProgRegistro regs[PROG_MAX];
   int k, i, n = 0;
@@ -1056,7 +1058,7 @@ static int continuarLocal(CatItem *saida, int max) {
     d->progresso = (int)(100.0 * p);
     // O instante ja esta aqui, no registro: carimbar agora poupa a busca por
     // chave que instanteDaConta faria depois, e sobrevive a compactacao do
-    // trakt_enfeitar_lote. Ver retomadoMs em catalogo.h.
+    // enfeite. Ver retomadoMs em catalogo.h.
     d->retomadoMs = r->lastWatchedMs;
     if (r->episodio > 0) {
       d->temporada = r->temporada;
@@ -1070,7 +1072,40 @@ static int continuarLocal(CatItem *saida, int max) {
     }
     n++;
   }
-  n = trakt_enfeitar_lote(saida, n);
+  { static CatItem reserva[CONT_MAX];
+    int nCheios = n, i2;
+    if (nCheios > CONT_MAX) nCheios = CONT_MAX;
+    memcpy(reserva, saida, sizeof(CatItem) * (size_t)nCheios);
+    n = cinemeta_enfeitar_lote(saida, n);
+    if (n == 0 && nCheios > 0) {
+      // O enfeite falhou em TUDO (rede do arranque disputada): sem isto os
+      // candidatos iam todos para o compactador e a fileira nascia vazia —
+      // o "so aparece ao trocar a fonte" (a troca remonta com a rede livre).
+      // Mantem os candidatos e pega o titulo no catalogo; arte vazia num
+      // card que toca vale mais que fileira nenhuma. O proximo ciclo
+      // decora.
+      memcpy(saida, reserva, sizeof(CatItem) * (size_t)nCheios);
+      n = nCheios;
+      for (i2 = 0; i2 < n; i2++) {
+        if (!saida[i2].titulo[0]) {
+          char base[24];
+          const char *dp = strchr(saida[i2].imdb, ':');
+          size_t L = dp ? (size_t)(dp - saida[i2].imdb) : strlen(saida[i2].imdb);
+          int idx;
+          if (L >= sizeof base) L = sizeof base - 1;
+          memcpy(base, saida[i2].imdb, L); base[L] = 0;
+          idx = cat_indice_por_imdb(base);
+          if (idx >= 0) {
+            const CatItem *c = cat_item(idx);
+            if (c && c->titulo[0])
+              snprintf(saida[i2].titulo, sizeof saida[i2].titulo, "%s", c->titulo);
+          }
+        }
+      }
+      printf("[desc] continuar local: enfeite falhou em %d, mantidos sem arte\n",
+             nCheios);
+      fflush(stdout);
+    } }
   if (n) printf("[desc] continuar assistindo local: %d\n", n);
   return n;
 }
@@ -1091,43 +1126,40 @@ static int continuarLocal(CatItem *saida, int max) {
 //        de 1% a 90% que o caminho local sempre aplicou.
 //
 // POR QUE A UNIAO E A RESPOSTA CERTA, e nao escolher uma fonte: as duas
-// respondem a mesma pergunta sobre universos DIFERENTES. O Trakt sabe o que a
-// pessoa assistiu em qualquer cliente Trakt; a conta Nuvio sabe o que ela
-// assistiu nos aparelhos Nuvio dela. Escolher uma joga fora metade do
+// respondem a mesma pergunta sobre universos DIFERENTES. O Simkl sabe o que a
+// pessoa assistiu em qualquer cliente vinculado a ele; a conta Nuvio sabe o
+// que ela assistiu nos aparelhos Nuvio dela. Escolher uma joga fora metade do
 // historico, e foi isso que aconteceu — em qualquer das duas direcoes o dono
 // perde. Deduplicar por imdb e ordenar pelo instante mais recente da o que ele
 // pediu: uma fileira so, com o que ele assistiu, onde quer que tenha assistido.
 //
-// QUANDO AS DUAS DISCORDAM DO MESMO TITULO, A MAIS RECENTE GANHA. E ai esta a
-// aproximacao que sobra: `trakt_continuar` NAO expoe o `paused_at` que vem no
-// JSON de /sync/playback, entao o instante de um item do Trakt so e conhecido
-// quando existe um registro local com a mesma chave (prog_por_chave). Sem
-// instante, o item do Trakt perde do que tem instante e mantem a posicao
-// relativa que o Trakt lhe deu. Expor `paused_at` em trakt.c troca esta regra
-// por uma comparacao exata; ate la, dado desconhecido ordena DEPOIS do
-// conhecido em vez de virar um instante inventado.
-#define CONT_MAX 8
+// QUANDO AS DUAS DISCORDAM DO MESMO TITULO, A MAIS RECENTE GANHA. O
+// `paused_at` do /sync/playback viaja COM o item (ver simkl_continuar_ler em
+// simkl.c), entao o instante de um item do Simkl e conhecido; quando falta
+// (ou empata com o da conta) vale a ordem de cada fonte, com a conta antes.
+// Dado desconhecido ordena DEPOIS do conhecido em vez de virar um instante
+// inventado.
 
-// Os limites que o caminho local sempre teve e o do Trakt nao: os mesmos de
-// home_registrar_retorno. Abaixo de 1% nao se comecou, de 90% em diante
-// acabou — e "continuar" nao e nem uma coisa nem a outra.
+// Os limites que o caminho local sempre teve e o remoto tambem tem agora: os
+// mesmos de home_registrar_retorno. Abaixo de 1% nao se comecou, de 90% em
+// diante acabou — e "continuar" nao e nem uma coisa nem a outra.
 static int emAndamento(int pct) { return pct >= 1 && pct < 90; }
 
 // QUANDO este item foi visto por ultimo, em ms. 0 = nao se sabe.
 //
 // Tres fontes, na ordem de confianca:
-//   1. o instante que veio COM o item. O do Trakt e o `paused_at` do
+//   1. o instante que veio COM o item. O do Simkl e o `paused_at` do
 //      /sync/playback; o da conta e o last_watched que o syncprog ja
 //      reconciliou entre celular e TV. Os dois sao carimbados na origem.
 //   2. o registro LOCAL desta obra, quando o item nao trouxe instante — e o
-//      caso de um item do Trakt que este aparelho tambem assistiu.
+//      caso de um item do Simkl que este aparelho tambem assistiu.
 //   3. nada. Ai o desempate e a ordem que a propria fonte deu, e nao uma data
 //      inventada (ver o campo `ord` em montarContinuar).
 //
 // O passo 2 existia sozinho antes, e era insuficiente: um titulo que a pessoa
-// assiste SO em outro aparelho e por outro cliente Trakt nao tem registro local
-// nenhum, entao TODO item do Trakt entrava com instante 0 e a fileira ordenava
-// pela ordem de resposta.
+// assiste SO em outro aparelho e por outro cliente vinculado nao tem registro
+// local nenhum, entao TODO item remoto entrava com instante 0 e a fileira
+// ordenava pela ordem de resposta.
 static long long instanteDaConta(const CatItem *c) {
   ProgRegistro r;
   char id[24], chave[48];
@@ -1152,36 +1184,45 @@ static int mesmaObra(const CatItem *a, const CatItem *b) {
 // Um candidato da fileira, com o que se sabe sobre QUANDO ele aconteceu.
 typedef struct { CatItem *item; long long ms; int ord; } Cand;
 
+// Quantos itens a ultima montagem do "Continuar assistindo" apurou — 0 =
+// a fileira nao existe na tela. Escrito aqui (fio da descoberta), lido pelo
+// sync para saber se vale remontar quando chega progresso novo (ver
+// sync_passo): um int nao precisa de trava para isto, como `buscando`.
+static int nContinuarNaTela;
+int desc_continuar_vazio(void) { return nContinuarNaTela <= 0; }
+
 static int montarContinuar(CatItem *saida, int max) {
   // static: dois lotes de 8 CatItem passam de 50 KB e montar() roda uma vez,
   // num fio so — a mesma razao do vetor de Decl mais abaixo.
-  static CatItem doTrakt[CONT_MAX], daConta[CONT_MAX];
+  static CatItem doSimkl[CONT_MAX], daConta[CONT_MAX];
   static Cand juntos[CONT_MAX * 2];
-  int nT, nL, nJ = 0, i, j, w, fora = 0, repetidos = 0;
+  int nS, nL, nJ = 0, i, j, w, fora = 0, repetidos = 0;
 
-  // FONTE ESCOLHIDA EM AJUSTES. 0 = as duas, 1 = so a conta Nuvio, 2 = so o
-  // Trakt. As duas sempre existiram e sempre foram fundidas aqui; o ajuste so
-  // decide quais entram. Existe porque quem usa a conta Nuvio e tambem tem
-  // Trakt ligado via um outro cliente via o "Continuar" do outro aparelho
-  // aparecer aqui sem ter pedido.
+  // FONTE ESCOLHIDA EM AJUSTES. 0 = as duas, 1 = so a conta Nuvio. As duas
+  // sempre sao fundidas aqui; o ajuste so decide quais entram. Existe porque
+  // quem usa a conta Nuvio e tambem tem Simkl vinculado ve o "Continuar" do
+  // outro aparelho aparecer aqui sem ter pedido.
   int fonte = ajustes_cw_fonte();
 
   if (max > CONT_MAX) max = CONT_MAX;
-  nT = fonte == 1 ? 0 : trakt_continuar(doTrakt, CONT_MAX);
-  // Os limites AGORA valem para as duas fontes. Sem isto, o /sync/playback
-  // devolve o que qualquer cliente Trakt pausou uma vez — inclusive titulos em
-  // 0% e titulos praticamente terminados, que e o "nunca assisti isso" do
-  // relato.
-  for (i = 0, w = 0; i < nT; i++) {
-    if (!emAndamento(doTrakt[i].progresso)) { fora++; continue; }
-    if (w != i) doTrakt[w] = doTrakt[i];
+  // Sem vinculo com o Simkl, nenhuma chamada passa (toda ela exige o token no
+  // cabecalho): pular direto em vez de queimar timeouts que atrasam a fileira
+  // inteira. E por isso que a fileira so aparecia com a fonte na conta — com
+  // "Ambas" e sem vinculo o ciclo prendia nas tentativas a rede.
+  nS = (fonte == 1 || !simkl_ligado()) ? 0 : simkl_continuar(doSimkl, CONT_MAX);
+  // Os limites valem para as duas fontes. Sem isto, o /sync/playback devolve
+  // o que qualquer cliente pausou uma vez — inclusive titulos em 0% e titulos
+  // praticamente terminados, que e o "nunca assisti isso" do relato.
+  for (i = 0, w = 0; i < nS; i++) {
+    if (!emAndamento(doSimkl[i].progresso)) { fora++; continue; }
+    if (w != i) doSimkl[w] = doSimkl[i];
     w++;
   }
-  nT = w;
-  nL = fonte == 2 ? 0 : continuarLocal(daConta, CONT_MAX);
+  nS = w;
+  nL = continuarLocal(daConta, CONT_MAX);
 
   // A CONTA ENTRA PRIMEIRO porque ela e a fonte DATADA (lastWatchedMs, que o
-  // syncprog ja reconciliou entre celular e TV). O item do Trakt que fala da
+  // syncprog ja reconciliou entre celular e TV). O item do Simkl que fala da
   // mesma obra sai: manter os dois poria a mesma serie duas vezes na fileira,
   // que e o defeito que continuarLocal ja evitava dentro da propria lista.
   for (i = 0; i < nL && nJ < (int)(sizeof juntos / sizeof *juntos); i++) {
@@ -1190,16 +1231,16 @@ static int montarContinuar(CatItem *saida, int max) {
     juntos[nJ].ord  = i;
     nJ++;
   }
-  for (i = 0; i < nT && nJ < (int)(sizeof juntos / sizeof *juntos); i++) {
+  for (i = 0; i < nS && nJ < (int)(sizeof juntos / sizeof *juntos); i++) {
     int repetido = 0;
     for (j = 0; j < nL; j++)
-      if (mesmaObra(&doTrakt[i], &daConta[j])) { repetido = 1; break; }
+      if (mesmaObra(&doSimkl[i], &daConta[j])) { repetido = 1; break; }
     if (repetido) { repetidos++; continue; }
-    juntos[nJ].item = &doTrakt[i];
-    juntos[nJ].ms   = instanteDaConta(&doTrakt[i]);
+    juntos[nJ].item = &doSimkl[i];
+    juntos[nJ].ms   = instanteDaConta(&doSimkl[i]);
     // Ordem BASE alta: SO decide quando os dois instantes sao desconhecidos ou
-    // iguais. Com o paused_at lido em trakt.c isso ficou raro — antes era o
-    // caso comum, porque todo item do Trakt chegava sem instante.
+    // iguais. Com o paused_at lido em simkl.c isso ficou raro — antes era o
+    // caso comum, porque todo item remoto chegava sem instante.
     // Nesse resto de casos a conta vem antes, cada fonte na ordem que deu.
     juntos[nJ].ord  = 1000 + i;
     nJ++;
@@ -1221,11 +1262,102 @@ static int montarContinuar(CatItem *saida, int max) {
 
   if (nJ > max) nJ = max;
   for (i = 0; i < nJ; i++) saida[i] = *juntos[i].item;
-  printf("[desc] continuar assistindo: %d do Trakt (%d fora de 1-90%%), "
+  printf("[desc] continuar assistindo: %d do Simkl (%d fora de 1-90%%), "
          "%d da conta, %d repetido(s); %d na fileira\n",
-         nT, fora, nL, repetidos, nJ);
+         nS, fora, nL, repetidos, nJ);
   fflush(stdout);
   return nJ;
+}
+
+// --- arte TMDB para os sem arte -------------------------------------------
+//
+// Itens sem poster E sem backdrop viram cartao cinza em toda tela que pede
+// retrato (Mais como este, Biblioteca, painel de Salvos). O TMDB resolve por
+// imdb e devolve os dois caminhos numa viagem so (/find). Fio destacado no
+// fim do ciclo: ate ARTE_TMDB_MAX titulos por vez, so os sem arte — os com
+// arte nem sao tocados. Escreve via cat_atualizar_item (indice revalidado na
+// hora, item relido na hora) e nao republica fileiras: arte nao muda fileira,
+// e o desenho le o item a cada quadro. So sessao corrente, sem disco: o cache
+// em disco guarda caminhos locais, nao URLs remotas.
+#define ARTE_TMDB_MAX 12
+struct ArtePed { char imdb[16]; char tipo[8]; };
+static int fioArteVivo;
+static void *fioArteTmdb(void *u) {
+  struct { int n; struct ArtePed it[ARTE_TMDB_MAX]; } *lote = u;
+  int i, comArte = 0;
+  if (!lote) goto fim;
+  for (i = 0; i < lote->n; i++) {
+    char url[400], *corpo;
+    const char *vet;
+    const char *p;
+    char poster[128] = "", fundo[128] = "";
+    if (lote->it[i].imdb[0] != 't') continue;
+    snprintf(url, sizeof url, "%s/find/%s?api_key=%s&external_source=imdb_id",
+             TMDB, lote->it[i].imdb, tmdbChave);
+    corpo = rede_baixar(url, 15);
+    if (!corpo) continue;
+    vet = !strcmp(lote->it[i].tipo, "series") ? "tv_results" : "movie_results";
+    p = js_array(corpo, NULL, vet);
+    if (p) {
+      const char *f = js_fim(p);
+      js_texto(p, f, "poster_path", poster, sizeof poster);
+      js_texto(p, f, "backdrop_path", fundo, sizeof fundo);
+    }
+    free(corpo);
+    // So caminho absoluto do TMDB ("/x.jpg"): relativo sem '/' nao e dele.
+    if (poster[0] && poster[0] != '/') poster[0] = 0;
+    if (fundo[0] && fundo[0] != '/') fundo[0] = 0;
+    if (!poster[0] && !fundo[0]) continue;
+    { int idx = cat_indice_por_imdb(lote->it[i].imdb);
+      const CatItem *atual = idx >= 0 ? cat_item(idx) : NULL;
+      if (atual && !atual->poster[0] && !atual->backdrop[0]) {
+        CatItem novo = *atual;
+        if (poster[0] == '/')
+          snprintf(novo.poster, sizeof novo.poster,
+                   "https://image.tmdb.org/t/p/w500%s", poster);
+        if (fundo[0] == '/')
+          snprintf(novo.backdrop, sizeof novo.backdrop,
+                   "https://image.tmdb.org/t/p/w780%s", fundo);
+        cat_atualizar_item(idx, &novo);
+        comArte++;
+      } }
+  }
+  printf("[desc] arte tmdb: %d sem arte, %d com arte nova\n", lote->n, comArte);
+  fflush(stdout);
+  free(lote);
+fim:
+  fioArteVivo = 0;
+  return NULL;
+}
+static void arteTmdbEmFalta(void) {
+  struct { int n; struct ArtePed it[ARTE_TMDB_MAX]; } *lote;
+  pthread_t f;
+  int i, nCat;
+  if (!tmdbChave[0] || fioArteVivo) return;
+  lote = malloc(sizeof *lote);
+  if (!lote) return;
+  lote->n = 0;
+  nCat = cat_n();
+  for (i = 0; i < nCat && lote->n < ARTE_TMDB_MAX; i++) {
+    const CatItem *c = cat_item(i);
+    if (!c || c->poster[0] || c->backdrop[0]) continue;
+    if (c->imdb[0] != 't') continue;
+    { const char *dp = strchr(c->imdb, ':');
+      size_t n = dp ? (size_t)(dp - c->imdb) : strlen(c->imdb);
+      if (n >= sizeof lote->it[0].imdb) n = sizeof lote->it[0].imdb - 1;
+      memcpy(lote->it[lote->n].imdb, c->imdb, n);
+      lote->it[lote->n].imdb[n] = 0; }
+    snprintf(lote->it[lote->n].tipo, sizeof lote->it[0].tipo, "%s", c->tipo);
+    lote->n++;
+  }
+  if (!lote->n) { free(lote); return; }
+  fioArteVivo = 1;
+  if (pthread_create(&f, NULL, fioArteTmdb, lote) != 0) {
+    free(lote);
+    fioArteVivo = 0;
+    return;
+  }
+  pthread_detach(f);
 }
 
 static void *montar(void *u) {
@@ -1238,24 +1370,21 @@ static void *montar(void *u) {
   (void)u;
   if (!lote) { buscando = 0; return NULL; }
 
-  // O "continue assistindo" vem PRIMEIRO e do Trakt. A home usa as primeiras
-  // posicoes do catalogo nessa fileira, entao a ordem aqui e o que define o
-  // que aparece la — e o historico tem de ganhar das recomendacoes.
+  // O "continue assistindo" vem PRIMEIRO, da conta e do Simkl. A home usa as
+  // primeiras posicoes do catalogo nessa fileira, entao a ordem aqui e o que
+  // define o que aparece la — e o historico tem de ganhar das recomendacoes.
   marco("montar: inicio");
-  // AS DUAS FONTES, UNIDAS. Ver o cabecalho de montarContinuar: com Trakt
-  // vinculado esta fileira ignorava o progresso da conta Nuvio, que e o que
-  // chega do celular do dono.
+  // AS DUAS FONTES, UNIDAS. Ver o cabecalho de montarContinuar: o progresso
+  // da conta Nuvio e o que chega do celular do dono.
   nContinuar = montarContinuar(lote, 8);
+  nContinuarNaTela = nContinuar;
   n += nContinuar;
-  marco("trakt continuar assistindo");
-  // O feed social oficial e uma fileira propria, logo depois do retorno ao
-  // que estava sendo visto. Ele vem cedo para nao depender dos manifestos dos
-  // addons e usa a mesma credencial Trakt ja carregada.
-  nSocial = trakt_social(lote + n, 8);
-  n += nSocial;
-  marco("trakt atividade dos amigos");
-  // O historico do Trakt e a PRIMEIRA fileira da home e chega ~1,6 s antes dos
-  // manifestos. Publicar aqui poe conteudo na tela nesse instante em vez de
+  marco("continuar assistindo");
+  // Feed social desativado: a fileira "Entre amigos" nao e mais montada
+  // (home.c pula a chave social_activity e nao a recria).
+  nSocial = 0;
+  // O historico e a PRIMEIRA fileira da home e chega antes dos manifestos.
+  // Publicar aqui poe conteudo na tela nesse instante em vez de
   // segurar tudo ate o fim.
   // Monta direto em filsMontadas: o vetor local `fil` so existe mais abaixo, e
   // criar um aqui so para copiar seria trabalho a toa.
@@ -1676,16 +1805,9 @@ static void *montar(void *u) {
     }
   }
 
-  // Watchlist e colecao entram DEPOIS das recomendacoes, e nao antes.
-  // A home usa as PRIMEIRAS posicoes do catalogo nas suas fileiras; com as
-  // listas do Trakt na frente (e elas passam de 60 itens cada) as fileiras
-  // viravam a watchlist inteira e as recomendacoes nunca apareciam. A
-  // biblioteca varre o catalogo todo procurando as marcas, entao para ela
-  // tanto faz onde estao.
-  GARANTE(400);
-  n += trakt_lista("watchlist",  lote + n, cap - n);
-  GARANTE(400);
-  n += trakt_lista("collection", lote + n, cap - n);
+  // Sem listas remotas anexadas ao catalogo: "Salvos" e "Colecao" vivem de
+  // marcas no item (naLista/naColecao, vindas da conta e da lista local), e
+  // a biblioteca varre o catalogo todo procurando por elas. Nada a anexar.
 #undef GARANTE
 
   if (n) {
@@ -1728,6 +1850,10 @@ static void *montar(void *u) {
     printf("[desc] nada veio da rede; segue o catalogo do pacote\n");
   }
   fflush(stdout);
+  // Arte para os sem arte (ver arteTmdbEmFalta abaixo): destacada para nao
+  // segurar a publicacao — a home ja esta na tela quando ela volta. O desenho
+  // le o item a cada quadro, entao escrever basta; fileira nao muda.
+  arteTmdbEmFalta();
   free(lote);
   buscando = 0;
   // Um pedido que chegou COM o ciclo no ar roda agora, com as credenciais que
@@ -1760,12 +1886,11 @@ void desc_iniciar(void) {
   else pthread_detach(fio);
 }
 
-// Remontar depois de uma mudanca de credencial (vincular o Trakt, receber a
+// Remontar depois de uma mudanca de credencial (vincular o Simkl, receber a
 // chave do TMDB pela conta). Chamar desc_iniciar() direto NAO resolve: se um
 // ciclo estiver no ar ele volta calado, e o pedido se perde justamente no caso
-// comum — a pessoa vincula o Trakt enquanto o sync do arranque ainda roda, e as
-// fileiras do Trakt so aparecem no proximo arranque. Foi o relato "ativa o
-// trakt e nao atualiza".
+// comum — a pessoa vincula o Simkl enquanto o sync do arranque ainda roda, e
+// as fileiras novas so aparecem no proximo arranque.
 int desc_catalogos_fora(void) { return catalogosFora; }
 
 // REMONTA AS FILEIRAS SEM TOCAR NA REDE.
@@ -2062,12 +2187,16 @@ static void *buscarEps(void *u) {
         extras_trailer_cinemeta(serie, src);
       t = js_prox(tf);
     } }
+  // Nota e episodios do mesmo corpo, sem viagem extra: imdbRating e o
+  // videos[] com a nota de cada episodio (ver extras_meta_cinemeta). Vale
+  // para filme e serie — e o que acende a aba Avaliacoes sem Trakt e sem
+  // chave de nada.
+  extras_meta_cinemeta(serie, corpo, !ehFilme);
   if (!ehFilme) publicarEpisodios(corpo, alvoItem, it->titulo);
-  // O MAPA DE EPISODIOS VISTOS NAO E PEDIDO AQUI, e essa linha existe para dizer
-  // por que: extras.c JA baixa /shows/<id>/progress/watched ao abrir o titulo,
-  // e agora alimenta vistoep de la. Uma versao deste arquivo chegou a pedir de
-  // novo — duas requisicoes identicas por titulo, para a segunda sobrescrever a
-  // primeira com o mesmo dado.
+  // O MAPA DE EPISODIOS VISTOS NAO E PEDIDO AQUI: ele vive em vistoep.h,
+  // alimentado pela conta Nuvio (syncep) e pelas marcas locais — ver
+  // extras_ep_visto, que consulta os dois. Pedir de novo aqui seria uma
+  // viagem por titulo para sobrescrever o mesmo dado.
   // A MESMA resposta traz elenco, direcao e a lista de temporadas. Buscar de
   // novo para cada uma seria tres viagens ao mesmo lugar.
   {

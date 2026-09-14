@@ -95,6 +95,7 @@ int   cat_do_cache(void)                   { return 0; }
 int   cat_gravar_cache(const char *d)      { (void)d; return 0; }
 int   cat_indice_por_imdb(const char *s)   { (void)s; return -1; }
 const CatItem *cat_item(int i)             { (void)i; return NULL; }
+int   cat_n(void)                            { return 0; }
 int   cat_n_episodios(int i)               { (void)i; return 0; }
 void  fil_gravar_registro(void)            { }
 int   fil_limite(void)                     { return limiteFileiras; }
@@ -123,6 +124,11 @@ int   trakt_continuar(CatItem *s, int m)   { (void)s; (void)m; return 0; }
 int   trakt_enfeitar_lote(CatItem *s, int n) { (void)s; (void)n; return 0; }
 int   trakt_lista(const char *q, CatItem *s, int m) { (void)q; (void)s; (void)m; return 0; }
 int   trakt_social(CatItem *s, int m)      { (void)s; (void)m; return 0; }
+// Pernas vivas do montarContinuar: sem vinculo e sem arte, como no aparelho
+// sem conta — o teste exercita colecoes, nao retomada.
+int   simkl_ligado(void)                 { return 0; }
+int   simkl_continuar(CatItem *s, int m) { (void)s; (void)m; return 0; }
+int   cinemeta_enfeitar_lote(CatItem *s, int n) { (void)s; return n; }
 
 // ------------------------------------------------------------------ o teste
 static void esperarCiclo(void) {

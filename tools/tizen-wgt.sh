@@ -29,7 +29,10 @@ cd "$(dirname "$0")/.."
 
 ENTRADA="${NUVIO_SAIDA:-build/tizen}"
 ESTAGIO="build/wgt-stage"
-NOME="${NUVIO_WGT_NOME:-NuvioTV-native}"
+# Dated by default so builds never overwrite each other in Downloads: every
+# .wgt used to be NuvioTV-native.wgt, which made stale installs
+# indistinguishable from fresh ones. Explicit NUVIO_WGT_NOME still wins.
+NOME="${NUVIO_WGT_NOME:-NuvioTV-native-$(date -u +%Y%m%d-%H%M)}"
 
 [ -f "$ENTRADA/index.html" ] || { echo "tizen-wgt.sh: rode tools/tizen.sh antes" >&2; exit 2; }
 
@@ -103,12 +106,22 @@ COMO INSTALAR (quem instala assina, ver o cabecalho deste script):
      ESSA LISTA NAO PODE SER MUDADA DEPOIS. Registre todas as TVs de uma vez.
 
   2. Na TV: Apps > digitar 12345 > Developer Mode ON > IP desta maquina.
+FIM
+  # Fora do heredoc de proposito: aqui $NOME expande para o arquivo datado
+  # desta build. Dentro do <<'FIM' acima ele sairia literal.
+  printf '  3. Assinar e instalar (USE O ARQUIVO DATADO, nao um NuvioTV-native.wgt\n'
+  printf '     antigo: o nome sem data e de uma build velha):\n'
+  printf '       unzip "%s" -d nuvio-wgt\n' "$NOME.wgt"
+  printf '       tizen package -t wgt -s <seu-perfil> -- nuvio-wgt\n'
+  printf '       sdb connect <ip-da-tv>\n'
+  printf '       tizen install -n "nuvio-wgt/%s" -t <id-da-tv>\n' "$NOME.wgt"
+  printf '       (o id-da-tv sai de: sdb devices)\n'
+cat <<'FIM'
 
-  3. Assinar e instalar:
-       unzip NuvioTV-native.wgt -d nuvio-wgt
-       tizen package -t wgt -s <seu-perfil> -- nuvio-wgt
-       sdb connect <ip-da-tv>
-       tizen install -n nuvio-wgt/NuvioTV-native.wgt -t $(sdb devices | awk 'NR==2{print $1}')
+  4. Na TV, DESINSTALE o app velho antes (segure Enter no icone > Delete), senao
+     o firmware pode manter a versao anterior no lugar e nada do pacote novo
+     aparece. Confira em Ajustes > Sobre este app (mostra a data da build) e
+     no painel de log (tecla vermelha): "[nuvio] build ...".
 
   Privilegios do config.xml sao todos de nivel PUBLIC. Um privilegio acima do
   nivel do certificado NAO degrada: faz a instalacao falhar inteira com

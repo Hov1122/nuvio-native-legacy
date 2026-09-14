@@ -27,6 +27,7 @@
 #include "perfis.h"
 #include "traktauth.h"
 #include "simklauth.h"
+#include "simkl.h"
 #include "js.h"
 #include <stdio.h>
 #include <string.h>
@@ -102,7 +103,8 @@ typedef enum {
   // Interface
   AJ_IDIOMA, AJ_ANIM, AJ_RESOLUCAO,
   // Conta
-  AJ_PERFIL_ATIVO, AJ_SYNC, AJ_ADDONS, AJ_SALVOS_DEST, AJ_TRAKT, AJ_SIMKL, AJ_SAIR,
+  AJ_PERFIL_ATIVO, AJ_SYNC, AJ_ADDONS, AJ_SALVOS_DEST, AJ_SIMKL, AJ_SAIR,
+  AJ_SYNC_AGORA,
   // Sobre
   AJ_VERSAO_I, AJ_ESPACO,
   AJ_N
@@ -124,10 +126,9 @@ static const char *V_RAIL[]      = { "Recolhida", "Fixa" };
 static const char *V_CW[]        = { "Card", "Largo", "P\xc3\xb4ster" };
 // FONTE do "Continuar assistindo". As duas ja existem e ja sao fundidas em
 // montarContinuar (descoberta.c); isto so escolhe quais entram.
-//   Ambas  = conta primeiro, Trakt preenchendo o que falta (o de sempre)
+//   Ambas  = conta primeiro, Simkl preenchendo o que falta (o de sempre)
 //   Conta  = so o progresso da conta Nuvio (syncprog.c)
-//   Trakt  = so o /sync/playback do Trakt
-static const char *V_CW_FONTE[]  = { "Ambas", "Conta Nuvio", "Trakt" };
+static const char *V_CW_FONTE[]  = { "Ambas", "Conta Nuvio" };
 // `continueWatchingSortMode`, normalizado em normalizeContinueWatchingSortMode.
 static const char *V_CW_ORDEM[]  = { "Padrão", "Estilo streaming", "Separar futuros" };
 // `discoverLocation`, validado contra estes tres.
@@ -138,15 +139,14 @@ static const char *V_NOTAS[]     = { "Mostrar", "Ocultar" };
 // ONDE O "+" ESCREVE ALEM DA LISTA LOCAL.
 //
 // A lista local (salvos.c) e escrita SEMPRE, nos dois valores, e isso nao e
-// esquecimento: antes dela o "+" nao guardava nada em disco, entao quem nao
-// tinha Trakt vinculado perdia tudo no primeiro ciclo de descoberta. Ver a nota
-// de abertura de salvos.h. O que esta escolha decide e se o "+" TAMBEM publica
-// na watchlist do Trakt.
+// esquecimento: antes dela o "+" nao guardava nada em disco. Ver a nota de
+// abertura de salvos.h. O que esta escolha decide e se o "+" TAMBEM publica
+// na watchlist do Simkl.
 //
-// Padrao "Watchlist do Trakt" = o comportamento que o app ja tinha. Trocar o
-// padrao para a lista local faria o "+" de quem usa Trakt parar de publicar la
-// depois de uma atualizacao, sem ninguem ter pedido.
-static const char *V_SALVOS[]    = { "Lista do Nuvio", "Watchlist do Trakt" };
+// Valor 1 ja foi "Watchlist do Trakt": como o Trakt saiu deste pacote, esse
+// valor agora significa Simkl — a intencao gravada ("publicar fora desta TV")
+// continua valendo, so o destino mudou.
+static const char *V_SALVOS[]    = { "Lista do Nuvio", "Lista do Simkl" };
 // Preenchido em rotulosDeIdioma(), no arranque: os nomes saem de linguas.c em
 // vez de serem uma segunda lista escrita a mao aqui. LING_MAX_OPC e folga: se
 // linguas.c crescer, o excedente simplesmente nao aparece — melhor que ler
@@ -226,7 +226,7 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Gradiente de foco clássico", V_LIGA, 2),   // classicFocusGradientEnabled
 
   ESC("Mostrar \"Continuar assistindo\"", V_LIGA, 2), // continueWatchingEnabled
-  ESC("Fonte do \"Continuar assistindo\"", V_CW_FONTE, 3),   // local, ver V_CW_FONTE
+  ESC("Fonte do \"Continuar assistindo\"", V_CW_FONTE, 2),   // local, ver V_CW_FONTE
   ESC("Estilo do \"Continuar assistindo\"", V_CW, 3), // continueWatchingCardStyle
   ESC("Miniatura do episódio",      V_LIGA, 2),   // useEpisodeThumbnailsInCw
   ESC("Desfocar próximo episódio",  V_LIGA, 2),   // blurContinueWatchingNextUp
@@ -263,9 +263,9 @@ static const Opcao OPCOES[AJ_N] = {
   LER("Sincronização"),
   ACAO("Addons"),
   ESC("Onde o + salva",             V_SALVOS, 2),
-  ACAO("Trakt"),
   ACAO("Simkl"),
   ACAO("Sair da conta"),
+  ACAO("Sincronizar agora"),
   LER("Versão"),
   LER("Memória usada por imagens"),
 };
@@ -312,7 +312,8 @@ static const char *CHAVE[] = {
   // oficial nao tem esta escolha, entao nao ha campo dela no blob da conta —
   // mas ela precisa sobreviver ao fechamento, e gravar() pula toda chave
   // iniciada por "-".
-  "-perfil", "-sync", "-addons", "salvosDestino", "-trakt", "-simkl", "-sair",
+  "-perfil", "-sync", "-addons", "salvosDestino", "-simkl", "-sair",
+  "-sincronizar",
   "-versao", "-espaco",
 };
 // QUATRO VETORES PARALELOS indexados pelo mesmo enum AJ_*: OPCOES, CHAVE,
@@ -458,7 +459,7 @@ static int valor[AJ_N] = {
   1,                /* gradiente de foco classico: desligado */
 
   0,                /* continuar assistindo: ligado */
-  0,                /* fonte do continuar: ambas (o comportamento de sempre) */
+  1,                /* fonte do continuar: conta Nuvio (a pedido; "Ambas" segue disponivel) */
   0,                /* estilo: card */
   0,                /* miniatura do episodio: ligada */
   1,                /* desfocar proximo: desligado */
@@ -490,16 +491,16 @@ static int valor[AJ_N] = {
   1, 0, 0,          /* idioma, animacoes, resolucao (0 = 1080p) */
   // O COMENTARIO ANTIGO AQUI ESTAVA ERRADO, e o erro so nao machucou por sorte.
   // Ele dizia `0, 0, /* versao, espaco */` logo depois do idioma, mas esta
-  // lista e POSICIONAL: entre AJ_ANIM e AJ_VERSAO_I existem SETE opcoes de
-  // conta (perfil, sync, addons, onde o + salva, trakt, simkl, sair). Aqueles
+  // lista e POSICIONAL: entre AJ_ANIM e AJ_VERSAO_I existem SEIS opcoes de
+  // conta (perfil, sync, addons, onde o + salva, simkl, sair). Aqueles
   // dois zeros caiam em AJ_PERFIL_ATIVO e AJ_SYNC, nao em versao e espaco — e
   // versao e espaco ficavam com o zero da inicializacao parcial, que por acaso
   // e o valor certo para uma linha de leitura. A primeira opcao com padrao
   // DIFERENTE de zero nesta faixa (a de agora) teria caido no lugar errado.
   // Explicitados um a um, e nao contados de cabeca.
   0, 0, 0,          /* perfil, sincronizacao, addons: linhas de leitura/acao */
-  1,                /* onde o + salva: watchlist do Trakt (ver V_SALVOS) */
-  0, 0, 0,          /* trakt, simkl, sair: acoes */
+  0,                /* onde o + salva: lista do Nuvio (ver V_SALVOS) */
+  0, 0, 0,          /* simkl, sair, sincronizar: acoes */
   0, 0,             /* versao, espaco: leitura */
 };
 
@@ -570,14 +571,14 @@ int ajustes_ocultar_nao_lancados(void){ return lig(AJ_OCULTAR_NLANC); }
 void ajustes_definir_ocultar_nao_lancados(int ligado) {
   valor[AJ_OCULTAR_NLANC] = ligado ? 0 : 1;
 }
-// 1 = o "+" tambem publica na watchlist do Trakt. A lista LOCAL e escrita nos
+// 1 = o "+" tambem publica na watchlist do Simkl. A lista LOCAL e escrita nos
 // dois casos; ver a nota de V_SALVOS e a de abertura de salvos.h.
-int ajustes_salvos_no_trakt(void)     { return valor[AJ_SALVOS_DEST] == 1; }
+int ajustes_salvos_no_simkl(void)     { return valor[AJ_SALVOS_DEST] == 1; }
 // Setter para o explicador de primeira vez (salvosintro.c), que faz esta
 // pergunta antes de a pessoa chegar em Ajustes. Grava na hora: quem respondeu e
 // desligou a TV nao deve ser perguntado de novo.
-void ajustes_definir_salvos_no_trakt(int noTrakt) {
-  valor[AJ_SALVOS_DEST] = noTrakt ? 1 : 0;
+void ajustes_definir_salvos_no_simkl(int noSimkl) {
+  valor[AJ_SALVOS_DEST] = noSimkl ? 1 : 0;
   gravar();
 }
 int ajustes_data_completa(void)       { return lig(AJ_DET_DATA_CHEIA); }
@@ -905,7 +906,15 @@ int ajustes_quer_sair(void) { return sair; }
 // aparelho — um numero fixo aqui seria mentira e nunca mudaria.
 static const char *textoLeitura(int op) {
   static char buf[64];
-  if (op == AJ_VERSAO_I) return AJ_VERSAO;
+  // A versao carrega a data da compilacao: com o numero estatico, dois
+  // pacotes de dias diferentes eram indistinguiveis na tela — e "instalei e
+  // nada mudou" nao tinha como ser conferido. __DATE__ e do dia em que ESTE
+  // codigo compilou, nao do dia em que se olha.
+  if (op == AJ_VERSAO_I) {
+    static char vert[48];
+    snprintf(vert, sizeof vert, "%s (%s)", AJ_VERSAO, __DATE__);
+    return vert;
+  }
   if (op == AJ_PERFIL_ATIVO) {
     static char bufp[80];
     int i;
@@ -934,15 +943,6 @@ static const char *textoLeitura(int op) {
       default:           return sessao_logada() ? i18n("aguardando") : i18n("sem conta");
     }
   }
-  if (op == AJ_TRAKT) {
-    switch (traktauth_estado()) {
-      case TRA_LIGADO:     return i18n("conectado");
-      case TRA_PEDINDO:    return i18n("preparando…");
-      case TRA_AGUARDANDO: return i18n("aguardando");
-      case TRA_ERRO:       return i18n("falhou");
-      default:             return i18n("conectar");
-    }
-  }
   if (op == AJ_SIMKL) {
     switch (simklauth_estado()) {
       case SMK_LIGADO:     return i18n("conectado");
@@ -959,6 +959,7 @@ static const char *textoLeitura(int op) {
     return buf;
   }
   if (op == AJ_SAIR) return "OK";   /* igual nos dois idiomas */
+  if (op == AJ_SYNC_AGORA) return "OK";
   if (op == AJ_LIMPAR_IMAGENS) return "OK";
   if (op == AJ_HERO_CATALOGOS) {
     // "Todos" com a lista vazia e o que o web escreve (common_all), e e o estado
@@ -1062,7 +1063,7 @@ static const char *ajudaOpcao(int op) {
 
     // --- Continuar assistindo
     case AJ_CW_LIGADO: return "A fileira de retomada, com o que você deixou pela metade e o próximo episódio das séries que acompanha.";
-    case AJ_CW_FONTE: return "De onde vem a fileira de retomada. \"Ambas\" usa a conta Nuvio e completa com o Trakt.";
+    case AJ_CW_FONTE: return "De onde vem a fileira de retomada. \"Ambas\" soma o progresso da conta e do Simkl.";
     case AJ_CW_ESTILO: return "A forma do card da retomada: quadrado com a arte, deitado largo, ou o cartaz em pé.";
     case AJ_CW_THUMB: return "Usa a imagem do próprio episódio no card, em vez da arte da série.";
     case AJ_CW_BLUR_PROX: case AJ_DET_BLUR_NAO_VISTOS: return "Oculta detalhes da miniatura para evitar spoilers de episódios ainda não assistidos.";
@@ -1095,8 +1096,8 @@ static const char *ajudaOpcao(int op) {
     case AJ_PERFIL_ATIVO: return "Perfil em uso nesta TV. Trocar de perfil é feito na tela de perfis, ao abrir o app.";
     case AJ_SYNC: return "Estado da última troca de dados com a sua conta: addons, progresso, coleções e preferências.";
     case AJ_ADDONS: return "Abre a lista de addons da sua conta, para ligar e desligar cada um nesta TV.";
-    case AJ_TRAKT: return "Conecta a sua conta do Trakt para marcar o que assistiu e usar a sua lista.";
-    case AJ_SIMKL: return "Conecta a sua conta do Simkl, uma alternativa ao Trakt para acompanhar séries.";
+    case AJ_SIMKL: return "Conecta a sua conta do Simkl para acompanhar series e filmes em todos os aparelhos.";
+    case AJ_SYNC_AGORA: return "Busca as novidades da conta e do Simkl e remonta a Home.";
     case AJ_SAIR: return "Sai da conta nesta TV e apaga daqui a sessão, os addons e o progresso guardados.";
     case AJ_ESPACO: return "Uso atual de memória pelo cache de imagens, não espaço ocupado no armazenamento da TV.";
     case AJ_LIMPAR_IMAGENS: return "Apaga na hora, sem confirmação, as imagens guardadas na memória. A arte volta do disco sem baixar de novo.";
@@ -1129,8 +1130,8 @@ static const char *efeitoOpcao(int op) {
     case AJ_SAIR:
       return "Não pede confirmação: OK sai na hora. Para voltar é preciso entrar de novo pelo QR.";
     case AJ_SALVOS_DEST:
-      return "A lista desta TV recebe o título nos dois casos. Isto decide se ele também vai para o Trakt.";
-    case AJ_ADDONS: case AJ_TRAKT: case AJ_SIMKL:
+      return "A lista desta TV recebe o título nos dois casos. Isto decide se ele também vai para o Simkl.";
+    case AJ_ADDONS: case AJ_SIMKL:
       return "OK abre. As setas laterais não fazem nada nesta linha.";
     default: return NULL;
   }
@@ -1246,19 +1247,16 @@ void ajustes_evento(const SDL_Event *e) {
 
   // Vinculo em andamento e uma pergunta: enquanto ele esta em pe, nada mais na
   // tela responde ao controle.
-  { TraEstado ta = traktauth_estado();
-    SmkEstado sa = simklauth_estado();
-    int traAtivo = (ta == TRA_PEDINDO || ta == TRA_AGUARDANDO || ta == TRA_ERRO);
+  { SmkEstado sa = simklauth_estado();
     int smkAtivo = (sa == SMK_PEDINDO || sa == SMK_AGUARDANDO || sa == SMK_ERRO);
-    if (traAtivo || smkAtivo) {
+    if (smkAtivo) {
       if (k == SDLK_ESCAPE || k == SDLK_AC_BACK || k == SDLK_BACKSPACE) {
-        if (traAtivo) traktauth_cancelar(); else simklauth_cancelar();
+        simklauth_cancelar();
       } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
         // OK so refaz o pedido quando deu erro; com o codigo na tela ele nao
         // faz nada de proposito, para nao trocar o codigo que a pessoa acabou
         // de digitar no celular.
-        if (traAtivo && ta == TRA_ERRO) traktauth_comecar();
-        else if (smkAtivo && sa == SMK_ERRO) simklauth_comecar();
+        if (sa == SMK_ERRO) simklauth_comecar();
       }
       return;
     } }
@@ -1306,8 +1304,18 @@ void ajustes_evento(const SDL_Event *e) {
     // accident is reloading artwork, and a modal is a screen this list
     // doesn't have. The memory row right above shows 0.0 MB afterwards.
     if (focoOp == AJ_LIMPAR_IMAGENS) { tex_limpar(); return; }
-    if (focoOp == AJ_TRAKT) { traktauth_comecar(); return; }
     if (focoOp == AJ_SIMKL) { simklauth_comecar(); return; }
+    if (focoOp == AJ_SYNC_AGORA) {
+      // Atualizacao manual: conta + Simkl + remontagem. As mesmas pecas do
+      // arranque, sob demanda — para o progresso do celular que ainda nao
+      // apareceu. simkl_esquecer rearma o puxao unico; o gancho no fim do
+      // sync remonta o Continuar se estava vazio e chegou dado.
+      sync_iniciar();
+      simkl_esquecer();
+      simkl_puxar();
+      desc_repetir();
+      return;
+    }
     if (focoOp == AJ_SAIR) {
       // Sair apaga a sessao do disco. Sem confirmacao de proposito: o custo de
       // sair sem querer e um login por QR, e uma caixa de confirmacao nesta
@@ -1319,8 +1327,8 @@ void ajustes_evento(const SDL_Event *e) {
       // ordem que vem da conta (ver catordem_esquecer). Sem isto, a proxima
       // pessoa herda a home montada pela anterior.
       fil_esquecer();
-      // A sessao sozinha nao basta: addons, Trakt, perfil e progresso ficariam
-      // para a proxima pessoa. Ver o cabecalho de sync_esquecer_usuario.
+      // A sessao sozinha nao basta: addons, vinculos, perfil e progresso
+      // ficariam para a proxima pessoa. Ver o cabecalho de sync_esquecer_usuario.
       sync_esquecer_usuario();
       sair = 1;   // volta para a home, que cai no login no proximo quadro
     }
@@ -1534,24 +1542,24 @@ static void desenhaVinculo(const char *servico, const char *codigo,
     l = txt_linha(TXT_HEADLINE, falha, 236, 108, 108, 255);
     txt_desenhar(l, (NV_TELA_W - l.w) * 0.5f, y);
     y += 70.0f;
-    l = txt_linha(TXT_CAPTION, "OK para tentar de novo · Voltar para fechar",
+    l = txt_linha(TXT_CAPTION, i18n("OK para tentar de novo · Voltar para fechar"),
                   150, 152, 160, 255);
     txt_desenhar(l, (NV_TELA_W - l.w) * 0.5f, y);
     return;
   }
   if (!codigo || !codigo[0]) {
-    l = txt_linha(TXT_HEADLINE, "Preparando o código…", 210, 212, 220, 255);
+    l = txt_linha(TXT_HEADLINE, i18n("Preparando o código…"), 210, 212, 220, 255);
     txt_desenhar(l, (NV_TELA_W - l.w) * 0.5f, y);
     return;
   }
 
-  l = txt_linha(TXT_BODY, "No celular, abra:", 176, 178, 186, 255);
+  l = txt_linha(TXT_BODY, i18n("No celular, abra:"), 176, 178, 186, 255);
   txt_desenhar(l, (NV_TELA_W - l.w) * 0.5f, y);
   y += 52.0f;
   l = txt_linha(TXT_TITULO3, endereco && endereco[0] ? endereco : "-", 255, 255, 255, 255);
   txt_desenhar(l, (NV_TELA_W - l.w) * 0.5f, y);
   y += 92.0f;
-  l = txt_linha(TXT_BODY, "e informe o código:", 176, 178, 186, 255);
+  l = txt_linha(TXT_BODY, i18n("e informe o código:"), 176, 178, 186, 255);
   txt_desenhar(l, (NV_TELA_W - l.w) * 0.5f, y);
   y += 66.0f;
 
@@ -1563,7 +1571,7 @@ static void desenhaVinculo(const char *servico, const char *codigo,
   y += 130.0f;
 
   if (esperando) {
-    l = txt_linha(TXT_CAPTION, "Aguardando a autorização…", 150, 152, 160, 255);
+    l = txt_linha(TXT_CAPTION, i18n("Aguardando a autorização…"), 150, 152, 160, 255);
     txt_desenhar(l, (NV_TELA_W - l.w) * 0.5f, y);
   }
 }
@@ -1985,12 +1993,8 @@ void ajustes_desenhar(Uint32 agora) {
 
   // Por cima de tudo: enquanto um vinculo esta em andamento, ele e a pergunta
   // da tela.
-  { TraEstado ta = traktauth_estado();
-    SmkEstado sa = simklauth_estado();
-    if (ta == TRA_PEDINDO || ta == TRA_AGUARDANDO || ta == TRA_ERRO)
-      desenhaVinculo("o Trakt", traktauth_codigo(), traktauth_url(),
-                     traktauth_erro(), ta == TRA_AGUARDANDO);
-    else if (sa == SMK_PEDINDO || sa == SMK_AGUARDANDO || sa == SMK_ERRO)
-      desenhaVinculo("o Simkl", simklauth_codigo(), simklauth_url(),
+  { SmkEstado sa = simklauth_estado();
+    if (sa == SMK_PEDINDO || sa == SMK_AGUARDANDO || sa == SMK_ERRO)
+      desenhaVinculo("Simkl", simklauth_codigo(), simklauth_url(),
                      simklauth_erro(), sa == SMK_AGUARDANDO); }
 }

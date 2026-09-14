@@ -386,7 +386,7 @@ static int abaDisponivel(int id) {
     case ABA_ELENCO:       return 1;
     // Basta UMA das notas para a aba valer a pena; o cartao que faltar mostra
     // "-", que e o que o web faz.
-    case ABA_AVALIACOES:   return notaDe(idx) > 0 || extras_nota_trakt() > 0;
+    case ABA_AVALIACOES:   return notaDe(idx) > 0 || extras_nota(EX_IMDB) > 0;
     case ABA_RELACIONADOS: return extras_n_relacionados() > 0;
     case ABA_COLECAO:      return extras_n_colecao() > 1;
     // Sem aba de comentarios: na referencia eles sao uma SECAO empilhada, e as
@@ -626,6 +626,30 @@ static int episodioAlvoBase(int *temp, int *epis, int *origem, int comFoco) {
         }
       }
     } }
+  // NEXT FROM THE LOCAL LIST, no tracker needed: the finished episode's
+  // successor in list order (crosses seasons naturally, like proximo.c).
+  // Without this, a done episode with no Trakt data falls through to S1E1
+  // below — the "opens on the first episode" report. Runs after the Trakt
+  // answers above, so linked data keeps priority when it exists.
+  { int n = cat_n_episodios(idx), i, abs = -1;
+    if (ci && ci->temporada > 0 && ci->episodio > 0 && ci->progresso >= 90 && n > 0) {
+      for (i = 0; i < n; i++) {
+        const CatEp *e2 = cat_episodio(idx, i);
+        if (e2 && e2->temporada == ci->temporada && e2->episodio == ci->episodio) {
+          abs = i;
+          break;
+        }
+      }
+      if (abs >= 0 && abs + 1 < n) {
+        const CatEp *nx = cat_episodio(idx, abs + 1);
+        if (nx && nx->temporada > 0 && nx->episodio > 0) {
+          if (temp) *temp = nx->temporada;
+          if (epis) *epis = nx->episodio;
+          if (origem) *origem = 3;
+          return 1;
+        }
+      }
+    } }
   // O PRIMEIRO DA TEMPORADA EM EXIBICAO, que e o que a nota acima promete —
   // com a lista emendada isto era o primeiro episodio da SERIE, qualquer que
   // fosse a aba aberta.
@@ -652,7 +676,18 @@ static void ancorarRetomada(void) {
   if (ancoraFeita || !ehSerie()) return;
   if (cat_n_episodios(idx) < 1) return;
   ancoraFeita = 1;
-  if (!episodioAlvoBase(&t, &e, &de, 0) || de < 2) return;
+  if (!episodioAlvoBase(&t, &e, &de, 0) || de < 2) {
+    // Uma linha para dizer por que a fileira abriu no comeco: sem ela, "abre
+    // no T1E1" tem dez causas possiveis e nenhuma pista.
+    const CatItem *ci0 = cat_item(idx);
+    printf("[detail] ancora: sem retomada (de=%d, prog=%d T%dE%d, eps=%d)\n", de,
+           ci0 ? ci0->progresso : -1, ci0 ? ci0->temporada : -1,
+           ci0 ? ci0->episodio : -1, cat_n_episodios(idx));
+    fflush(stdout);
+    return;
+  }
+  printf("[detail] ancora: T%dE%d (origem %d)\n", t, e, de);
+  fflush(stdout);
   n = cat_n_episodios(idx);
   for (i = 0; i < n; i++) {
     const CatEp *ep = cat_episodio(idx, i);
@@ -1143,7 +1178,17 @@ void detail_evento(const SDL_Event *e) {
       // sem resposta. Tem de ser secaoColunas e nao secaoN: os trailers sao
       // DESENHADOS mas nao aceitam foco, e um filme sem elenco pousaria neles.
       for (int r = 0; r < N_SECOES; r++)
-        if (secaoColunas(r) > 0) { foco.fileira = r; foco.coluna = 0; nivel = 1; break; }
+        if (secaoColunas(r) > 0) {
+          // Restaura a coluna lembrada em vez de cravar 0: cravar punha o
+          // foco na aba da temporada 1, e o observador de abas lia isso como
+          // "o dono trocou de temporada" — zerava a ancora da retomada e a
+          // fileira de episodios abria no primeiro episodio toda vez.
+          int n = foco.nColunas[r] > 0 ? foco.nColunas[r] : secaoColunas(r);
+          int a = foco.colunaLembrada[r];
+          if (a >= n) a = n - 1;
+          if (a < 0) a = 0;
+          foco.fileira = r; foco.coluna = a; nivel = 1; break;
+        }
     }
     else if (k == SDLK_RIGHT) { if (botao < nBotoes() - 1) botao++; }
     else if (k == SDLK_LEFT)  { if (botao > 0) botao--; }
@@ -1345,6 +1390,11 @@ void detail_atualizar(float dt, Uint32 agora) {
     // Andar pelos episodios move a ancora junto: voltando para as abas, a
     // fileira nao pula de volta para o episodio de onde a aba a deixou.
     epAncora = foco.coluna;
+  } else if (foco.fileira == SEC_ABAS_INFO) {
+    // Abas de informacao (elenco, avaliacoes...) trocam no movimento, como
+    // as de temporada: o conteudo ja esta em memoria e pedir OK para ver
+    // cada aba e uma viagem de ida e volta que nao mostra nada novo.
+    if (foco.coluna != abaInfo) abaInfo = foco.coluna;
   }
 
   // SELETOR DE COMENTARIOS, pela mesma regra: mover o foco ja troca a fonte.
@@ -1916,27 +1966,30 @@ static void heroWeb(float a, float desloc) {
                   x += NV_DETW2_SEP * 2 + NV_DETW2_PONTO_D; }
       x += desenhaSeloImdb(x, yc, ci->nota, a);
     }
-    const int fontes[] = { EX_TOMATOES, EX_TRAKT };
+    const int fontes[] = { EX_TOMATOES, EX_IMDB };
     for(int i=0;i<2;i++) {
       int n=extras_nota(fontes[i]);
       if(n<=0) continue;
       // Rotten Tomatoes: tomate FRESCO de 60% para cima, o RESPINGO verde
       // abaixo — e a convencao do proprio site, e o icone e que diz o
-      // veredito antes do numero. Trakt: o WORDMARK (nome), nao o icone.
+      // veredito antes do numero. IMDb: o logo, e a casa decimal que o
+      // percentual nao tem ("9.5", nao "9%").
       const char *marca;
+      char valor[20];
       if(fontes[i]==EX_TOMATOES) marca=extras_caminho_marca_nome(n>=600?"tomatoes_fresh":"tomatoes_rotten");
-      else marca=extras_caminho_marca_nome("trakt_wordmark");
-      GLuint logo=tex_obter(marca);
-      char valor[20];snprintf(valor,sizeof valor,"%d%%",n/10);
+      else marca=extras_caminho_marca(EX_IMDB);
+      if(extras_fonte_percentual(fontes[i])) snprintf(valor,sizeof valor,"%d%%",n/10);
+      else snprintf(valor,sizeof valor,"%d.%d",n/10,n%10);
       TxtLinha lv=txt_linha(TXT_DET_META2,valor,220,220,225,255);
-      float mh=fontes[i]==EX_TRAKT?22.0f:32.0f,mw=mh;
+      GLuint logo=tex_obter(marca);
+      float mh=32.0f,mw=mh;
       if(logo){float ap=tex_aspecto(marca);if(ap>0)mw=mh*ap;if(mw>110)mw=110;}
       if(x+24+mw+10+lv.w>NV_DETW2_X+NV_HERO_SIN_W)break;
       x+=24;
       // GFX_TEXTO e nao GFX_SNAP: o SNAP ignora o alfa da textura e o tomate saia
       // com um quadrado escuro em volta. O TEXTO preserva o RGB e usa o alfa.
-      // O wordmark do Trakt e escuro: vai por GFX_MARCA, que tinge o alfa.
-      if(logo){GfxModo m=fontes[i]==EX_TRAKT&&tex_marca_escura(marca)?GFX_MARCA:GFX_TEXTO;
+      // Logo escuro (marca escura): vai por GFX_MARCA, que tinge o alfa.
+      if(logo){GfxModo m=tex_marca_escura(marca)?GFX_MARCA:GFX_TEXTO;
         gfx_rect((GfxRect){x,yc-mh*.5f,mw,mh},logo,m,0,0,0,0,.93f,.94f,.96f,a);}
       else {TxtLinha label=txt_linha(TXT_MINI,extras_fonte_marca(fontes[i]),200,200,205,255);
         txt_desenhar_alpha(label,x,yc-label.h*.5f,a);mw=label.w;}
@@ -2233,8 +2286,8 @@ static void desenhaEpisodio(GfxRect r, int c, float f, float a, Uint32 agora) {
       { TxtLinha ld = txt_linha(TXT_CAPTION2, epDur, 179, 179, 179, 255);
         txt_desenhar_alpha(ld, x, y, a); x += ld.w + 16; }
     }
-    // Extras fornece avaliacao Trakt por episodio, nao IMDb. Nunca usar
-    // a nota da serie ou o selo de outro provedor neste rodape.
+    // A nota do episodio vem do Cinemeta (videos[].rating), nao do IMDb da
+    // serie nem de selo de outro provedor: cada selo mostra o seu numero.
     int nota = 0;
     if (ep) for (int st = 0; st < extras_n_temporadas(); st++) {
       if (extras_temporada_numero(st) != ep->temporada) continue;
@@ -2245,7 +2298,7 @@ static void desenhaEpisodio(GfxRect r, int c, float f, float a, Uint32 agora) {
       break;
     }
     if (nota > 0) {
-      char valor[32]; snprintf(valor, sizeof valor, "Trakt %d.%d", nota / 10, nota % 10);
+      char valor[32]; snprintf(valor, sizeof valor, "%d.%d", nota / 10, nota % 10);
       TxtLinha ln = txt_linha(TXT_CAPTION2, valor, 229, 231, 236, 255);
       GfxRect selo = { x, y - 3, ln.w + 16, NV_DETP_EP_ICONE + 6 };
       gfx_cor(selo, 0.18f, 0.15f, 0.15f, 0.17f, 0.94f * a);
@@ -2626,6 +2679,18 @@ static void desenhaRelacionados(float x, float y, float a) {
     int aceso = naLista && i == foc;
     const char *po = extras_relacionado_poster(i);
     GLuint t = po[0] ? tex_obter_larg(po, REL_CARD_W) : 0;
+    // Poster morto (404), fundo vivo: sem isto o cartao ficava cinza com so
+    // o nome — o "retrato vazio, deitado carrega" do relato. So quando o
+    // cache decretou FALHOU; carregando mostra esqueleto. O aspecto acompanha
+    // quem ganhou.
+    const char *usada = po;
+    if (!t && po[0] && tex_falhou(po)) {
+      const char *fu = extras_relacionado_fundo(i);
+      if (fu[0] && strcmp(fu, po)) {
+        t = tex_obter_larg(fu, REL_CARD_W);
+        if (t) usada = fu;
+      }
+    }
     float raio = raioCartaz(REL_CARD_W, REL_CARD_H);
     if (cx + REL_CARD_W > NV_TELA_W - NV_DETP_X) break;
     if (aceso) {
@@ -2633,7 +2698,7 @@ static void desenhaRelacionados(float x, float y, float a) {
       gfx_cor(anel, raio, 1, 1, 1, a);
     }
     if (t) {
-      gfx_tex_aspect_atual = tex_aspecto(po);
+      gfx_tex_aspect_atual = tex_aspecto(usada);
       gfx_rect(r, t, GFX_CARD, aceso ? 1.0f : 0.0f, 0, 0, raio, 0, 0, 0, a);
       gfx_tex_aspect_atual = 0.0f;
     } else {
@@ -2811,7 +2876,7 @@ static float cabecalhoComentarios(float x, float y, float a) {
   // para uma coisa so.
   (void)larguraMarca;
   yy += 46.0f;
-  { TxtLinha ls = txt_linha(TXT_DET_META2, "Avaliações do Trakt", 179, 179, 179, 255);
+  { TxtLinha ls = txt_linha(TXT_DET_META2, "Avaliações", 179, 179, 179, 255);
     txt_desenhar_alpha(ls, x, yy, a * 0.95f); }
   yy += 44.0f;
 

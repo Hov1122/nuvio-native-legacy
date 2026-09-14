@@ -32,7 +32,6 @@
 //      ao topo empurra o cabecalho para fora da tela na primeira descida.
 #include "biblioteca.h"
 #include "contalib.h"
-#include "trakt.h"
 #include "gfx.h"
 #include "text.h"
 #include "tex_cache.h"
@@ -59,9 +58,9 @@
 #define BIB_FADE       90.0f
 
 // "Salvos" = QUERO VER, e ele tem DUAS fontes que caem na mesma marca
-// (CatItem.naLista): a watchlist do Trakt, posta ali pela descoberta, e a
-// biblioteca da CONTA (sync_pull_library), posta ali por contalib.c.
-// "Coleção" = TENHO, e so o Trakt tem.
+// (CatItem.naLista): a biblioteca da CONTA (sync_pull_library), posta ali por
+// contalib.c, e a lista LOCAL (salvos.c).
+// "Coleção" = TENHO: marcas locais e da conta (naColecao/comprado).
 enum { MODO_SALVOS, MODO_NUVEM, BIB_N_MODOS };
 static const char *ROT_MODO[BIB_N_MODOS] = { "Salvos", "Coleção" };
 
@@ -85,12 +84,12 @@ static float animModo[BIB_N_MODOS];
 static float animPick[2];
 static float animFoco[BIB_MAX_LINHAS][NV_BIB_COLUNAS];
 static float scrollY = 0.0f;
-static int sair = 0, pedido = -1;
+static int sair = 0, pedido = -1, pedidoMenu = 0;
 
-// Estado de conta. A lista de verdade e a do Trakt, que marca
-// ci->naLista/naColecao NO ITEM — nao ha mais tabela por indice aqui: o
-// catalogo e reconstruido da rede e um indice guardado aponta para outro titulo
-// na volta seguinte. `comprado` sobrevive porque nao ha fonte para ele ainda.
+// Estado de conta. As marcas vivem NO ITEM — nao ha mais tabela por indice
+// aqui: o catalogo e reconstruido da rede e um indice guardado aponta para
+// outro titulo na volta seguinte. `comprado` sobrevive porque nao ha fonte
+// para ele ainda.
 static char comprado[CAT_MAX];
 
 static float alturaLinha(void) {
@@ -117,20 +116,19 @@ static void reconstruir(void) {
   for (int i = 0; i < n; i++) {
     const CatItem *ci = cat_item(i);
     if (!ci) continue;
-    // "Salvos" = QUERO VER (watchlist do Trakt). "Nuvem" = TENHO (colecao).
+    // "Salvos" = QUERO VER (lista local + conta). "Colecao" = TENHO.
     //
     // Os dois modos mostravam quase a MESMA lista: ambos incluiam ci->naLista,
     // entao trocar de pilula praticamente nao mudava nada e as duas nao tinham
-    // razao de existir. A divisao agora e a do proprio Trakt, que separa
-    // watchlist (o que se pretende ver) de collection (o que se possui) — sao
-    // perguntas diferentes e cada pilula responde uma.
+    // razao de existir. A divisao agora e por pergunta — o que se pretende ver
+    // contra o que se possui — e cada pilula responde uma.
     //
     // E le do ITEM, nao mais do vetor naLista[] indexado por posicao. Aquele
     // vetor era um erro conhecido e documentado: o catalogo e RECONSTRUIDO da
     // rede a cada descoberta, entao a posicao 3 de hoje e outro titulo amanha —
     // a marca "salvo" migrava sozinha para um filme que ninguem salvou. A marca
     // tem de viver no item, e vive (CatItem.naLista / .naColecao, preenchidos
-    // com a lista de verdade do Trakt).
+    // pela conta e pela lista local).
     int entra = (modo == MODO_SALVOS) ? ci->naLista
                                       : (ci->naColecao || comprado[i]);
     if (!entra) continue;
@@ -196,16 +194,16 @@ int biblioteca_iniciar(void) {
 void biblioteca_encerrar(void) { }
 
 int biblioteca_na_lista(int i) {
-  // A verdade e a marca DO ITEM, que a descoberta preenche com a watchlist do
-  // Trakt. O vetor por indice que respondia aqui apontava para outro titulo
-  // assim que o catalogo era reconstruido.
+  // A verdade e a marca DO ITEM, que a conta e a lista local preenchem. O
+  // vetor por indice que respondia aqui apontava para outro titulo assim que
+  // o catalogo era reconstruido.
   const CatItem *c = cat_item(i);
   return c ? c->naLista : 0;
 }
 int biblioteca_comprado(int i) { return (i >= 0 && i < CAT_MAX) ? comprado[i] : 0; }
 void biblioteca_alternar_lista(int i) {
   // So remonta a lista. Quem vira a marca e cat_definir_na_lista, no mesmo
-  // ponto que fala com o Trakt (app.c) — ter DOIS donos do mesmo estado era o
+  // ponto que escreve fora (app.c) — ter DOIS donos do mesmo estado era o
   // que deixava a biblioteca discordando do botao "+" do detalhe.
   (void)i;
   reconstruir();
@@ -220,6 +218,10 @@ int biblioteca_pediu_abrir(int *indiceCatalogo) {
   return 1;
 }
 
+// Mesma regra da home (home_pediu_menu): consome o pedido, então ler duas
+// vezes não abre duas vezes.
+int biblioteca_pediu_menu(void) { int v = pedidoMenu; pedidoMenu = 0; return v; }
+
 void biblioteca_evento(const SDL_Event *e) {
   if (e->type != SDL_KEYDOWN) return;
   SDL_Keycode k = e->key.keysym.sym;
@@ -230,6 +232,9 @@ void biblioteca_evento(const SDL_Event *e) {
   // foco. Por isso o modo muda AQUI e nao por focus_mover — chamar os dois na
   // ordem errada devolvia o foco para a coluna 0 a cada movimento.
   if (foco.fileira == BIB_FIL_MODO) {
+    // Esquerda no primeiro modo abre o menu lateral, como na home: sem isto
+    // a biblioteca era a unica tela sem saida para a barra.
+    if (k == SDLK_LEFT && modo == 0) { pedidoMenu = 1; return; }
     if (k == SDLK_RIGHT && modo < BIB_N_MODOS - 1) {
       modo++; reconstruir(); foco.fileira = BIB_FIL_MODO; foco.coluna = modo; return;
     }
@@ -248,6 +253,7 @@ void biblioteca_evento(const SDL_Event *e) {
   if (foco.fileira == BIB_FIL_PICK) {
     if (k == SDLK_RIGHT && pickSel == 0) { pickSel = 1; foco.coluna = 1; return; }
     if (k == SDLK_LEFT  && pickSel == 1) { pickSel = 0; foco.coluna = 0; return; }
+    if (k == SDLK_LEFT  && pickSel == 0) { pedidoMenu = 1; return; }
     if (k == SDLK_UP)   { foco.fileira = BIB_FIL_MODO; foco.coluna = modo; return; }
     if (k == SDLK_DOWN) { if (nFiltro) focus_mover_grade(&foco, 0, 1); return; }
     if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) {
@@ -267,7 +273,13 @@ void biblioteca_evento(const SDL_Event *e) {
   // A grade da biblioteca e uma GRADE: manter a coluna ao subir e descer, e
   // nao voltar para a coluna onde o cursor esteve por ultimo naquela linha.
   if (k == SDLK_RIGHT)     focus_mover_grade(&foco, 1, 0);
-  else if (k == SDLK_LEFT) focus_mover_grade(&foco, -1, 0);
+  else if (k == SDLK_LEFT) {
+    // Esquerda na primeira coluna abre o menu lateral (home.c faz o mesmo em
+    // toda fileira): antes ela morria na borda e a barra nao tinha como abrir
+    // daqui.
+    if (foco.coluna == 0) { pedidoMenu = 1; return; }
+    focus_mover_grade(&foco, -1, 0);
+  }
   else if (k == SDLK_DOWN) focus_mover_grade(&foco, 0, 1);
   else if (k == SDLK_UP) {
     if (foco.fileira == BIB_FIL_GRADE) { foco.fileira = BIB_FIL_PICK; foco.coluna = pickSel; }
@@ -392,7 +404,7 @@ static void desenhaVazio(void) {
   const char *l2 = totalModo
       ? "Em Tipo, escolha Todos. Confira também os filtros em Ajustes."
       : modo == MODO_NUVEM
-        ? "Os filmes e séries da sua coleção no Trakt ficam reunidos nesta aba."
+        ? "Os filmes e séries da sua coleção ficam reunidos nesta aba."
         : "Abra um filme ou série e escolha Adicionar à lista para guardar.";
   TxtLinha t1 = txt_linha(TXT_TITULO2, l1, 255, 255, 255, 255);
   TxtLinha t2 = txt_linha(TXT_CALLOUT, l2, 179, 179, 179, 255);
@@ -424,34 +436,18 @@ void biblioteca_desenhar(Uint32 agora) {
   // Selo de origem, alinhado a direita da area util. Espacado de proposito: no
   // web ele tem letter-spacing 4 e le como etiqueta, nao como palavra.
   //
-  // O SELO DIZ A ORIGEM DE VERDADE. Estava cravado em "NUVIO", que e o nome do
-  // app e nao a fonte dos dados — a lista vem do TRAKT, e o log confirma
-  // ("[trakt] credencial carregada", "[trakt] watchlist: 118"). Selo de origem
-  // que nao reflete a origem e da mesma familia da classificacao "14" e do
-  // elenco de demonstracao: informacao inventada com cara de dado.
-  //
-  // Sem credencial do Trakt a biblioteca e local, e o selo diz isso.
-  //
-  // AGORA ELE E POR MODO, e nao um selo so para a tela inteira. Os dois modos
-  // tem fontes diferentes: "Salvos" pode vir da CONTA (sync_pull_library, via
-  // contalib.c) e "Coleção" so existe no Trakt. Um selo unico acabava dizendo
-  // "LOCAL" sobre uma lista que veio da conta — que foi exatamente o relato
-  // ("Top right of library says 'Local'").
+  // O SELO DIZ A ORIGEM DE VERDADE: a conta (sync_pull_library, via
+  // contalib.c) ou a lista local. Um selo unico acabava dizendo "LOCAL" sobre
+  // uma lista que veio da conta — que foi exatamente o relato ("Top right of
+  // library says 'Local'").
   //
   // "LOCAL" tambem cobre "a conta ainda nao respondeu". Nao ha estado
   // intermediario desenhado de proposito: o selo diz de onde veio o que ESTA na
   // tela, e enquanto a conta nao respondeu o que esta na tela e local.
   //
-  // COM CONTA E TRAKT AO MESMO TEMPO, "Salvos" e uma MISTURA das duas listas e
-  // nenhum rotulo unico e completo. O web nao tem esse caso (la a fonte e um
-  // seletor, `sourceMode`, e a lista e uma so), entao a ordem dele
-  // (libraryController.getSourceLabel) nao ajuda a decidir. Fica a conta na
-  // frente: e ela que responde a pergunta que o selo existe para responder —
-  // "isto acompanha meus outros aparelhos?".
-  { const char *fonte = modo == MODO_NUVEM
-        ? (trakt_ativo() ? "TRAKT" : "LOCAL")
-        : (contalib_tem_conta() ? seloCaixaAlta("Conta")
-                                : trakt_ativo() ? "TRAKT" : "LOCAL");
+  // Fica a conta na frente: e ela que responde a pergunta que o selo existe
+  // para responder — "isto acompanha meus outros aparelhos?".
+  { const char *fonte = contalib_tem_conta() ? seloCaixaAlta("Conta") : "LOCAL";
     float wSelo = txt_tracking(TXT_CALLOUT, fonte, 128, 128, 128,
                                -1.0f, 0.0f, 0.0f, 4.0f);
     txt_tracking(TXT_CALLOUT, fonte, 128, 128, 128,
@@ -467,8 +463,8 @@ void biblioteca_desenhar(Uint32 agora) {
     // traduzia porque cada texto chega em text.c sozinho.
     snprintf(resumo, sizeof resumo, "%d %s   ·   %s", nFiltro,
              i18n(nFiltro == 1 ? "título" : "títulos"),
-             i18n(modo == MODO_SALVOS ? "Sua lista para assistir"
-                                      : "Sua coleção no Trakt"));
+              i18n(modo == MODO_SALVOS ? "Sua lista para assistir"
+                                      : "Sua coleção"));
     TxtLinha info = txt_linha(TXT_CAPTION2, resumo, 179, 179, 179, 255);
     txt_desenhar(info, NV_BIB_DIR - info.w,
                  NV_BIB_MODO_Y + (NV_BIB_MODO_H - info.h) * 0.5f);
@@ -509,8 +505,20 @@ void biblioteca_desenhar(Uint32 agora) {
         float raio = 24.0f / NV_BIB_CARD_W;
 
         const CatItem *ci = cat_item(filtro[i]);
-        const char *arte = (ci && ci->poster[0]) ? ci->poster : NULL;
+        // Portrait prefers poster, falls back to backdrop — same rule as
+        // home.c arte_por_formato. Without it any title missing a poster
+        // sits as a skeleton forever. The tex_falhou leg covers the worse
+        // case: poster PRESENT but dead (404), backdrop alive — loading
+        // alone (PENDENTE) still shows skeleton, correctly.
+        const char *arte = NULL;
+        if (ci) arte = ci->poster[0] ? ci->poster
+                                     : (ci->backdrop[0] ? ci->backdrop : NULL);
         GLuint tex = arte ? tex_obter(arte) : 0;
+        if (!tex && arte && tex_falhou(arte) && ci->backdrop[0] &&
+            strcmp(ci->backdrop, arte)) {
+          arte = ci->backdrop;
+          tex = tex_obter(arte);
+        }
         if (tex) {
           gfx_tex_aspect_atual = tex_aspecto(arte);
           gfx_rect(card, tex, GFX_CARD, f, 0.0f, 0.0f, raio, 0, 0, 0, a);

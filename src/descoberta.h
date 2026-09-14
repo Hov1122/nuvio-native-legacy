@@ -21,6 +21,11 @@ void desc_iniciar(void);
 // vez de ser descartado. Chamar do fio principal.
 void desc_repetir(void);
 
+// 1 quando a fileira "Continuar assistindo" nao existe na tela (a ultima
+// montagem apurou zero itens). O sync usa para remontar so quando chega
+// progresso novo que teria onde aparecer — ver sync_passo.
+int desc_continuar_vazio(void);
+
 // Quantas fileiras A MAIS a home mostraria se o limite fosse ao maximo. 0
 // quando o limite nao esta cortando nada.
 //

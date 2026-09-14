@@ -25,6 +25,7 @@
 //      esta pausado. Pausado sem controles o usuario fica olhando um quadro
 //      congelado sem saber o que houve.
 #include "player.h"
+#include "simkl.h"
 #include "idioma.h"
 #include "posplay.h"
 #include "extras.h"
@@ -36,7 +37,6 @@
 #include "anim.h"
 #include "layout.h"
 #include "catalogo.h"
-#include "trakt.h"
 #include "sync.h"
 #include "parental.h"
 #include "episodios.h"
@@ -200,6 +200,7 @@ static Uint32 ultimoInput = 0;
 // trecho no ar o foco ja nasce nele — e o que a mao faz: "pra cima" e OK.
 static int skipFoco = 0;
 static int trechoPulavel(double *fim);
+static void scrobble(const char *acao);
 // Instante em que a IMAGEM comecou (nao a abertura da tela: entre uma coisa e
 // outra ha a busca de fonte, que pode levar segundos). Zero enquanto nao houve.
 // A guia parental se apoia nisto para aparecer UMA vez, no comeco, e sumir.
@@ -699,6 +700,10 @@ void player_definir_fonte(const char *url) {
   erroFonte = 0;
   comVideo = video_tocar(url);
   if (!comVideo) player_erro_fonte();
+  // Playback comecou (ou a fonte trocou no meio): start abre a sessao do
+  // "Watching now" no Simkl. Troca de fonte da mesma sessao e dedupada la
+  // (mesmo episodio sem pausa no meio nao reenvia).
+  else scrobble("start");
   aplicarAspecto();
 }
 
@@ -718,17 +723,38 @@ void player_encerrar(void) {
   if (comVideo && video_pronto() && duracaoSeg > 1.0f) {
     float pos = posSeg >= duracaoSeg - 60.0f ? duracaoSeg : posSeg;
     const CatItem *ci = cat_item(idx);
+    // Espelho no SIMKL quando vinculado: terminou (>=90%, mesma régua do
+    // olho) entra no historico de la. Best-effort e atrasado como o resto do
+    // SIMKL; sem vinculo simkl_marcar recusa sozinho, sem custo.
+    if (ci && ci->imdb[0] && pos >= duracaoSeg * 0.9f) {
+      int t = 0, e = 0;
+      if (epT > 0 && epE > 0) { t = epT; e = epE; }
+      simkl_marcar(ci->imdb, ci->tipo, t, e, 1);
+    }
     home_registrar_retorno(idx, pos, duracaoSeg);
     cat_salvar_progresso_ep(idx, pos, duracaoSeg,epT,epE);
-    // E tambem para o Trakt, que e de onde o "continue assistindo" vem: gravar
-    // so aqui deixaria este app discordando dos outros aparelhos do dono.
+    // Stop do scrobble: fecha a sessao do "Watching now". Com >=80% o
+    // servidor marca visto sozinho (o historico acima continua por conta
+    // propria); abaixo disso vira retomada para outro aparelho. So apos
+    // 1 s assistido, para nao abrir e fechar sessao em falso.
+    if (pos > 1.0f) {
+      float pct = 100.0f * pos / duracaoSeg;
+      const CatItem *c2 = cat_item(idx);
+      char base[24];
+      if (c2 && c2->imdb[0]) {
+        const char *dp = strchr(c2->imdb, ':');
+        size_t n = dp ? (size_t)(dp - c2->imdb) : strlen(c2->imdb);
+        int t = 0, e = 0;
+        if (n >= sizeof base) n = sizeof base - 1;
+        memcpy(base, c2->imdb, n);
+        base[n] = 0;
+        if (epT > 0 && epE > 0) { t = epT; e = epE; }
+        simkl_scrobble("stop", base, c2->tipo, t, e, (double)pct);
+      }
+    }
+    // E para a CONTA: o progresso do app oficial vem dela, e o "Continuar
+    // assistindo" da TV le o que ela mandar pelo syncprog.
     if (ci && ci->imdb[0]) {
-      char id[64];
-      if (epT > 0 && epE > 0) snprintf(id, sizeof id, "%.*s:%d:%d", (int)strcspn(ci->imdb,":"),ci->imdb, epT, epE);
-      else snprintf(id, sizeof id, "%s", ci->imdb);
-      trakt_marcar(id, pos, duracaoSeg);
-      // E para a CONTA. Trakt e conta sao dois destinos diferentes: nem todo
-      // usuario liga o Trakt, e o progresso do app oficial vem da conta.
       sync_sujar_progresso();
     }
   }
@@ -736,7 +762,7 @@ void player_encerrar(void) {
   // conserto.
   //
   // O relato e "saio do filme e trava", no Tizen. Duas hipoteses cairam antes
-  // de virarem codigo: trakt_marcar ja roda em fio proprio e detached (nao
+  // de virarem codigo: a marcacao remota ja roda em fio proprio e detached (nao
   // bloqueia nada), e o progresso local so mexe em memoria e num arquivo curto.
   // O que sobra no fio do desenho e o desmonte do AVPlay — p.stop() seguido de
   // p.close(), sincronos, e `webapis.avplay` so existe no fio principal, entao
@@ -869,9 +895,37 @@ static int ofertaProximo(void) {
 // barra junto — o usuario precisa ver o efeito do que apertou.
 static void acordar(void) { visivel = 1; ultimoInput = SDL_GetTicks(); }
 
+// Scrobble SIMKL no gesto: start (play/resume), pause, stop (fim). So com
+// video de verdade; sem vinculo simkl_scrobble recusa sozinho, sem custo.
+// Progresso em % como o guia manda; sem duracao conhecida, 0. O imdb vai
+// TRUNCADO no ':' (obra, nao episodio): o episodio viaja em season+number,
+// e um id composto nao resolve no lookup do servidor.
+static void scrobble(const char *acao) {
+  const CatItem *c = cat_item(idx);
+  char base[24];
+  const char *dp;
+  size_t n;
+  double pct = 0.0;
+  int t = 0, e = 0;
+  if (!comVideo || !c || !c->imdb[0]) return;
+  if (duracaoSeg > 1.0)
+    pct = 100.0 * (double)posSeg / (double)duracaoSeg;
+  dp = strchr(c->imdb, ':');
+  n = dp ? (size_t)(dp - c->imdb) : strlen(c->imdb);
+  if (n >= sizeof base) n = sizeof base - 1;
+  memcpy(base, c->imdb, n);
+  base[n] = 0;
+  if (epT > 0 && epE > 0) { t = epT; e = epE; }
+  simkl_scrobble(acao, base, c->tipo, t, e, pct);
+}
+
 static void alternarTocando(void) {
   tocando = !tocando;
   if (comVideo) video_pausar(!tocando);
+  // Pausa e resume sao gestos distintos no guia (pause salva para retomada em
+  // outro aparelho; start reabre). O avanco (saltar) pausa por conta propria
+  // sem passar aqui — seek nao gera chamada, como o guia manda.
+  if (comVideo && video_pronto()) scrobble(tocando ? "start" : "pause");
 }
 
 // AVANCO. So vale com os controles em pe: cegamente, seta seria um pulo
@@ -947,6 +1001,17 @@ void player_evento(const SDL_Event *e) {
     if (r == PAUSAO_CONSUMIU) { acordar(); return; }
   }
 
+  // ESPACO = play/pause FISICO (o shell traduz as teclas de midia; nao ha
+  // teclado na TV, entao Espaco nunca e "OK"). Alterna em todo estado: com
+  // controles escondidos ou em pe, com o pulo em foco, com o cartao de
+  // a-seguir no ar. O OK de verdade (Return/Enter) continua contextual
+  // abaixo. Excecao unica: no meio do avanco ele confirma o salto, que e o
+  // gesto em curso — pausar ali quebraria a mira.
+  if (k == SDLK_SPACE) {
+    if (scrubbing) { terminarSalto(); acordar(); return; }
+    alternarTocando(); acordar(); return;
+  }
+
   // CONTROLES ESCONDIDOS: qualquer direcao so acorda a interface. O OK direto
   // pausa/retoma sem navegar nada — e o gesto do aparelho: um toque no centro
   // e o video obedece, sem passos no meio.
@@ -959,16 +1024,20 @@ void player_evento(const SDL_Event *e) {
 
   if (!visivel) {
     if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) {
-      // O proximo episodio NAO e mais tratado aqui: posplay_evento roda antes
-      // de tudo em player_evento e ja consome o OK enquanto o cartao esta no
-      // ar. Manter esta linha faria o OK disparar a troca duas vezes.
-      { double fim;int tipo;if(intro_ativo(posSeg,&fim,&tipo)&&tipo!=INTRO_CREDITOS){
-          posSeg=(float)fim+.25f;if(comVideo)video_buscar(posSeg);return; } }
+      // Sem pulo direto: pular exige o foco no botao (CIMA e depois OK), para
+      // que o OK continue significando uma coisa so com os controles
+      // escondidos. O proximo episodio NAO e tratado aqui: posplay_evento
+      // roda antes de tudo em player_evento e ja consome o OK enquanto o
+      // cartao esta no ar.
       alternarTocando(); acordar(); return;
     }
     if (k == SDLK_UP || k == SDLK_DOWN || k == SDLK_LEFT || k == SDLK_RIGHT) {
       acordar();
-      if (trechoPulavel(NULL)) { skipFoco = 1; barraFoco = 1; }
+      // Acorda NA BARRA, e nao no botao de pular: com trecho pulavel o botao
+      // continua VISIVEL (ver desenharAcoesEpisodio), so nao nasce focado. O
+      // segundo CIMA e que foca ele — e CIMA com ele em foco fica nele, em vez
+      // de abrir a folha de faixas por cima do que a pessoa queria apertar.
+      barraFoco = 1;
     }
     return;
   }
@@ -983,6 +1052,11 @@ void player_evento(const SDL_Event *e) {
   }
 
   // CONTROLES EM PE: o foco anda pelos botoes e o OK aperta o botao em foco.
+  // Ordem vertical com trecho pulavel: botoes -> barra -> PULAR -> (fica).
+  // CIMA no botao de pular NAO abre a folha de faixas: ela continua
+  // alcancavel pela fileira de botoes (CIMA ate a barra, BAIXO ate os botoes,
+  // OK no botao de audio/legendas), e abrir por cima do pulo era o "aperto
+  // CIMA e cai no audio" do relato.
   if (skipFoco) {
     double fim;
     if (!trechoPulavel(&fim)) skipFoco = 0;          // o trecho acabou por baixo do foco
@@ -990,7 +1064,7 @@ void player_evento(const SDL_Event *e) {
       posSeg = (float)fim + .25f; if (comVideo) video_buscar(posSeg);
       skipFoco = 0; acordar(); return;
     } else if (k == SDLK_DOWN) { skipFoco = 0; acordar(); return; }
-    else if (k == SDLK_UP) { pedFaixas = 1; acordar(); return; }
+    else if (k == SDLK_UP) { acordar(); return; }    // fica no botao
     else { acordar(); return; }                         // esquerda/direita: nada ao lado
   }
   if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) {
@@ -1023,10 +1097,10 @@ void player_evento(const SDL_Event *e) {
   // isso nao havia como adiantar o filme pela barra — so os saltos de 10s dos
   // botoes, que e o defeito que o dono relatou.
   //
-  // A folha de faixas NAO se perde: ela continua no CIMA, um nivel acima. Da
-  // fileira de botoes o primeiro CIMA pega a barra e o segundo abre a folha.
-  // Trocar o gesto por outro (um botao a mais, um menu) seria pior: no aparelho
-  // "pra cima revela legendas e audio" e o que a mao ja sabe.
+  // Com trecho pulavel, o proximo CIMA foca o botao de PULAR (que continua
+  // desenhado o tempo todo, ver desenharAcoesEpisodio); sem trecho, abre a
+  // folha de faixas no audio. A folha tambem sai pelo OK nos botoes de
+  // legenda/audio da fileira — CIMA nao e o unico caminho ate ela.
   if (k == SDLK_UP) {
     // Pelo gesto de CIMA a folha abre no AUDIO, que e a coluna que a mao
     // procura mais.
@@ -1440,10 +1514,13 @@ void player_desenhar(Uint32 agora) {
   posplay_desenhar(agora, NV_TELA_H - PLR_PAD_Y);
 
   float a = anim * entrada;
-  // O botao de pular fica POR CIMA dos degrades e dos controles: desenhado
-  // antes deles, o veu de 400px do rodape o afogava assim que a barra subia —
-  // era o "aparece e some" do relato. Sem controles ele e a unica coisa na tela.
-  if (a <= 0.005f) { desenharAcoesEpisodio(); return; }   // tocando limpo
+  // O botao de pular fica POR CIMA dos degrades e dos controles, e fica SEMPRE
+  // que o trecho esta ativo — com controles em pe ele sobe para cima deles
+  // (.is-raised no web; o `anim` no `y` la de desenharAcoesEpisodio faz a
+  // subida). Desenha-lo so com os controles escondidos era o "aperto CIMA e o
+  // botao some" do relato: acordar a interface escondia a unica saida.
+  desenharAcoesEpisodio();
+  if (a <= 0.005f) return;   // tocando limpo: so o botao, sem controles
 
   // Dois degrades, como no web: .player-controls-gradient-top (150px, 0.7 -> 0)
   // e .player-controls-gradient-bottom (200px, 0 -> 0.8). O de baixo sustenta o

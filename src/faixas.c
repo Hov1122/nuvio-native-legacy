@@ -66,6 +66,8 @@ static int modo;
 #define FX_EST_ATRASO 7
 
 static int nLinhas(int col);
+static int legEmbDeTela(int disp, int *addIdx);
+static int legTelaDeEmb(int e);
 
 void faixas_abrir(void) { faixas_abrir_em(0); }
 
@@ -82,8 +84,11 @@ void faixas_abrir_em(int col) {
   coluna = modo;                 // audio -> col 0; legenda -> col 1
   foco[0] = video_audio_atual();
   // A legenda pode estar desligada (-1); a primeira linha da coluna e sempre
-  // "Desativada", entao o indice da lista e deslocado em um.
-  foco[1] = (legExterna >= 0 ? legExterna : video_legenda_atual()) + 1;
+  // "Desativada", entao o indice da lista e deslocado em um. O indice atual
+  // do pipeline vira posicao de tela pelo mapa abaixo, porque as sem idioma
+  // podem estar filtradas (ver legEmbDeTela).
+  { int d = legTelaDeEmb(video_legenda_atual());
+    foco[1] = legExterna >= 0 ? legExterna + 1 : (d >= 0 ? d + 1 : 0); }
   // Clamp nas duas colunas. A lista de legendas CRESCE durante a sessao (as do
   // OpenSubtitles chegam depois) e a de audio so existe apos o sourceInfo:
   // guardar um indice de antes e reabrir sem conferir poe o foco fora do vetor.
@@ -97,8 +102,63 @@ void faixas_abrir_em(int col) {
 
 int faixas_aberta(void) { return aberta; }
 
+static int nLegendas(void);
+// ---- visibilidade: faixas sem idioma --------------------------------------
+//
+// O pipeline anuncia as legendas sem etiquetar ("Legenda 1..12"); a que tem
+// idioma — ou veio do OpenSubtitles — e a que a pessoa procura, e mostrar as
+// sem nome junto empurrava a procurada para baixo da dobra. Entao a lista da
+// folha soma: embutidas COM idioma, a ATIVA mesmo sem idioma (a folha nunca
+// mente sobre o que esta tocando), e as do OpenSubtitles. So quando existe ao
+// menos uma com nome; sem nenhuma, mostra tudo — melhor uma lista numerada
+// que nenhuma lista.
+//
+// De proposito so na FOLHA, e nao no video.c: os indices do pipeline seguem
+// intactos para o selectTrack e para a sonda MKV (que casa por trackNum e
+// pode nomear uma faixa depois — ela aparece sozinha na proxima abertura).
+// Tudo aqui e recalculado a cada leitura, sem estado para apodrecer quando a
+// lista cresce no meio da sessao.
+static int filtroLegenda(void) {
+  int i, n = video_n_legenda();
+  for (i = 0; i < n; i++) {
+    const VideoFaixa *f = video_legenda(i);
+    if (f && f->idioma[0]) return 1;
+  }
+  return addons_n_legendas() > 0;
+}
+static int embVisivel(int e) {
+  const VideoFaixa *f;
+  if (!filtroLegenda()) return video_legenda(e) != NULL;
+  f = video_legenda(e);
+  if (!f) return 0;
+  if (f->idioma[0]) return 1;
+  return e == video_legenda_atual();
+}
+static int nEmbVisiveis(void) {
+  int i, n = 0, total = video_n_legenda();
+  for (i = 0; i < total; i++) if (embVisivel(i)) n++;
+  return n;
+}
+// Posicao de tela (0-based, sem a "Desativada") -> embutida crua; -1 com o
+// indice do addon em addIdx.
+static int legEmbDeTela(int disp, int *addIdx) {
+  int i, total = video_n_legenda(), v = 0;
+  for (i = 0; i < total; i++) {
+    if (!embVisivel(i)) continue;
+    if (v++ == disp) return i;
+  }
+  if (addIdx) *addIdx = disp - v;
+  return -1;
+}
+// Embutida crua -> posicao de tela; -1 quando filtrada.
+static int legTelaDeEmb(int e) {
+  int i, v = 0;
+  for (i = 0; i < e; i++) if (embVisivel(i)) v++;
+  return embVisivel(e) ? v : -1;
+}
+
 static int nLegendas(void) {
-  int n = video_n_legenda() + addons_n_legendas();
+  int n = nEmbVisiveis() + addons_n_legendas();
   return n;
 }
 
@@ -168,16 +228,16 @@ static void ciclarEstilo(int linha) {
   player_leg_estilo_mudou();
 }
 
-// Rotulo da linha `i` da coluna de legenda. Ate video_n_legenda() sao as
-// embutidas; depois vem as do OpenSubtitles.
+// Rotulo da linha `i` da coluna de legenda, em posicao DE TELA (ver o mapa
+// acima): embutidas visiveis primeiro, depois as do OpenSubtitles.
 static const char *rotuloLegenda(int i, const char **marca) {
-  int emb = video_n_legenda();
+  int add = 0, e = legEmbDeTela(i, &add);
   *marca = NULL;
-  if (i < emb) {
-    const VideoFaixa *f = video_legenda(i);
+  if (e >= 0) {
+    const VideoFaixa *f = video_legenda(e);
     return f ? f->rotulo : "";
   }
-  { const Legenda *l = addons_legenda(i - emb);
+  { const Legenda *l = addons_legenda(add);
     if (!l) return "";
     *marca = "OpenSubtitles";
     return l->rotulo; }
@@ -187,12 +247,11 @@ static void aplicar(void) {
   if (coluna == 0) {
     video_escolher_audio(foco[0]);
   } else {
-    int i = foco[1] - 1;
-    int emb = video_n_legenda();
+    int i = foco[1] - 1, add = 0, emb = legEmbDeTela(i, &add);
     if (i < 0)        { video_escolher_legenda(-1); legenda_desligar(); legExterna = -1; }
-    else if (i < emb) { video_escolher_legenda(i);  legenda_desligar(); legExterna = -1; }
+    else if (emb >= 0){ video_escolher_legenda(emb); legenda_desligar(); legExterna = -1; }
     else {
-      const Legenda *l = addons_legenda(i - emb);
+      const Legenda *l = addons_legenda(add);
       // So marca como ativa se houve o que aplicar: sem a URL o uMS nao recebe
       // nada, e a folha diria "ativa" sobre uma legenda que nunca subiu.
       if (l) {
@@ -278,7 +337,7 @@ static void coluna_desenhar(int col, float x, float larg, float y0, float a) {
     if(marca && *marca)
       txt_desenhar_alpha(txt_linha_corta(TXT_PG_FIM,marca,sub,sub,sub,255,larg-72),x,y+34,a);
     int ativo=col==0?i==video_audio_atual():
-      col==1?(legExterna>=0?i-1==legExterna:i-1==video_legenda_atual()):0;
+      col==1?(legExterna>=0?i-1==legExterna:i-1==legTelaDeEmb(video_legenda_atual())):0;
     if(ativo) txt_desenhar_alpha(txt_linha(TXT_BODY,"✓",c,c,c,255),x+larg-44,y+12,a);
   }
   if(!n) txt_bloco(TXT_PG_FIM,"Nenhuma faixa disponível nesta fonte.",178,180,186,x,y0+68,larg,28,a,2);

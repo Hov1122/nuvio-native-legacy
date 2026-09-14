@@ -1,8 +1,11 @@
-// Tela de perfil e estatisticas do Trakt.
+// Tela de perfil e estatisticas.
 //
 // O modulo e deliberadamente "burro" sobre rede: ele recebe um snapshot de
-// dados pronto, guarda uma copia e desenha. Isso permite ao app buscar Trakt em
-// uma worker sem jamais bloquear o quadro de SDL/GLES da TV.
+// dados pronto, guarda uma copia e desenha. Isso permite ao app buscar os
+// numeros numa worker sem jamais bloquear o quadro de SDL/GLES da TV.
+// A fonte hoje e o Simkl (ver simkl_perfil em simkl.c): totais de todo o
+// periodo, sem o detalhe diario/semanal que um dia o Trakt dava — as secoes
+// que precisam dele mostram o estado vazio honesto em vez de numero inventado.
 #ifndef NV_PERFIL_H
 #define NV_PERFIL_H
 
@@ -39,6 +42,12 @@ typedef struct {
   int plays;
   int filmes;
   int episodios;
+  // Contagens do Simkl que nao cabem nos quatro nomes antigos: series
+  // acompanhadas (watching) e titulos na watchlist (plantowatch). A fileira
+  // de quatro cartoes do resumo usa estes dois no lugar de reproducoes e
+  // dias ativos, que o Simkl nao expoe.
+  int assistindo;
+  int naLista;
 
   int streakAtual;
   int streakAnterior;

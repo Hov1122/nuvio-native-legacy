@@ -93,7 +93,7 @@ typedef struct {
   // de quem respondeu primeiro.
   //
   // Precisa morar no CatItem, e nao num vetor paralelo, porque
-  // trakt_enfeitar_lote COMPACTA o lote (tira o que o Cinemeta nao conhece):
+  // cinemeta_enfeitar_lote COMPACTA o lote (tira o que o Cinemeta nao conhece):
   // um vetor de instantes indexado por posicao dessincroniza ali, em silencio.
   long long retomadoMs;
 } CatItem;
@@ -233,6 +233,13 @@ void cat_salvar_progresso_ep(int indice, double posSeg, double durSeg, int tempo
 // gravar ou nao ja foi tomada em progresso.c.
 void cat_aplicar_progresso(int indice, double posSeg, double durSeg, int temporada, int episodio);
 
+// Zera barra, minutos e nome de episodio em TODOS os itens e reaplica o
+// arquivo de progresso do perfil em vigor. Troca de perfil sem isto deixava
+// a tela anterior na memoria. Devolve quantos reaplicou.
+int  cat_reaplicar_progresso(void);
+// Zera o espelho de "assistido" (olho) inteiro.
+void cat_historico_esquecer(void);
+
 // O item passa a apontar para outro episodio, sem mexer em progresso. Pos-play
 // usa ao pular para o proximo: e dele que sai o rotulo do player.
 void cat_apontar_episodio(int indice, int temporada, int episodio);
@@ -303,6 +310,10 @@ const CatFileira *cat_fileira(int r);   // NULL fora da faixa
 // validas o tempo todo.
 void cat_republicar_fileiras(const CatFileira *fils, int nNovas);
 
+// Quantas publicacoes ja aconteceram. Para saber se dados novos chegaram a
+// tela depois de um ponto (troca de perfil): retrato antes, compara depois.
+unsigned cat_publicacoes(void);
+
 void cat_definir_tudo(const CatItem *lista, int qtd,
                       const CatFileira *fils, int nFils);
 
@@ -328,5 +339,12 @@ int           cat_similares(int indice, int *saida, int max);
 unsigned      cat_revisao(void);
 int           cat_n_episodios(int indiceItem);
 const CatEp  *cat_episodio(int indiceItem, int i);   // indice circular; NULL se o catalogo esta vazio
+
+// Arte e sinopse por id do IMDb, vindas do Cinemeta (o mesmo indice que os
+// addons usam). Enfeita os n itens em fios e COMPACTA o lote, tirando o que o
+// Cinemeta nao conhece. Definida em trakt.c por acidente historico — e puro
+// Cinemeta, nenhuma chamada Trakt — e declarada aqui porque opera sobre
+// CatItem e todos os montadores de fileira precisam dela.
+int cinemeta_enfeitar_lote(CatItem *saida, int n);
 
 #endif

@@ -10,6 +10,7 @@
 #include "salvos.h"
 #include "trakt.h"
 #include "traktauth.h"
+#include "simklauth.h"
 #include "catalogo.h"
 #include "vistoep.h"
 #include "progresso.h"
@@ -47,6 +48,8 @@ static volatile int addonsCedo;
 
 static char traktTok[300];
 static int  temTraktRem;
+static char simklTok[400];
+static int  temSimklRem;
 
 // Chaves de servico que a conta guarda e o app lia de arquivo do dono.
 // MEDIDO na conta real: os provedores presentes sao animeskip, debrid:*,
@@ -215,6 +218,15 @@ static void puxarCredenciais(void) {
     else if (!strcmp(prov, "mdblist")) {
       if (js_texto(cred, cred + strlen(cred), "api_key", mdbKey, sizeof mdbKey))
         temMdb = 1;
+    }
+    else if (!strcmp(prov, "simkl")) {
+      // O push parte daqui (simklauth_passo, com o p_profile_id em vigor); a
+      // volta restaura o vinculo do perfil numa TV nova ou depois do logout.
+      char tk[400];
+      if (js_texto(cred, cred + strlen(cred), "access_token", tk, sizeof tk)) {
+        snprintf(simklTok, sizeof simklTok, "%s", tk);
+        temSimklRem = 1;
+      }
     }
     else if (!strncmp(prov, "debrid:", 7)) {
       // A chave solta serve para resolver torrent sem url (debrid.c). Quem tem
@@ -579,6 +591,12 @@ void sync_passo(unsigned agoraMs) {
   if (temTraktRem)  { if (traktauth_estado() != TRA_LIGADO) { trakt_definir(traktTok, nuvem_trakt_cliente()); remontar = 1; }
                       else printf("[sync] trakt: vinculo local mantido, credencial da conta ignorada\n");
                       temTraktRem = 0; }
+  // Mesma regra do Trakt: vinculo feito NESTA TV ganha do que a conta manda.
+  // O token e do perfil em vigor (o pull veio com o p_profile_id dele).
+  if (temSimklRem)  { if (simklauth_estado() != SMK_LIGADO) {
+                        if (simklauth_definir_remoto(simklTok)) remontar = 1;
+                      } else printf("[sync] simkl: vinculo local mantido, credencial da conta ignorada\n");
+                      temSimklRem = 0; }
   if (temTmdb)      { desc_tmdb_definir(tmdbKey);   temTmdb = 0; }
   if (temMdb)       { extras_definir_chave(mdbKey); temMdb = 0; }
   // A ordem da home entra no MESMO remontar, e so quando MUDOU de verdade.
@@ -655,7 +673,20 @@ void sync_passo(unsigned agoraMs) {
   // Progresso da conta: progresso.c decide linha a linha (pendente local vence,
   // senao o mais novo), guarda ate o que nao tem titulo no catalogo ainda, e
   // o catalogo recebe so o que foi aceito.
-  syncprog_aplicar(NULL);
+  { int aceitos = syncprog_aplicar(NULL);
+    // A fileira monta ANTES de o progresso da conta chegar: sem isto ela
+    // nascia vazia e so aparecia ao trocar a fonte em Ajustes (que refaz o
+    // ciclo na hora). Conta o que ENTROU NO ARQUIVO, e nao o que casou com o
+    // catalogo: o sync aplica com o catalogo ainda vazio (o mount le o
+    // arquivo, nao o catalogo), e casados==0 escondia dado que ja estava la.
+    // So com fileira vazia — um ciclo de descoberta custa ~20 s, nao se paga
+    // por nada — e a caixa esvazia a cada aplicacao, entao nao ha rajada.
+    if (aceitos > 0 && desc_continuar_vazio()) {
+      printf("[sync] %d progresso(s) novo(s) e retomada vazia: remontando\n",
+             aceitos);
+      fflush(stdout);
+      desc_repetir();
+    } }
   if (estado == SYNC_PRONTO) ultimoOk = agoraMs;
 }
 
@@ -739,6 +770,7 @@ void sync_esquecer_usuario(void) {
   memset(addonsRem, 0, sizeof addonsRem);
   nAddonsRem = 0; temAddonsRem = 0; addonsCedo = 0;
   traktTok[0] = 0; temTraktRem = 0;
+  simklTok[0] = 0; temSimklRem = 0;
   memset(tmdbKey, 0, sizeof tmdbKey); temTmdb = 0;
   memset(mdbKey, 0, sizeof mdbKey);   temMdb = 0;
   cVistos = cBiblio = cColecoes = 0;

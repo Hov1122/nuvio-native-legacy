@@ -759,6 +759,29 @@ static int aplicarProgressoDoDisco(void) {
   return aplicados;
 }
 
+// Zera o espelho de "assistido" (olho). Repopulado pelo pull da conta e do
+// Simkl do perfil em vigor; sem isto a marca de um perfil vazava no outro.
+void cat_historico_esquecer(void) {
+  memset(historico, 0, sizeof historico);
+  nHistorico = 0;
+}
+
+// Reaplica o progresso do perfil em vigor sobre os itens publicados: zera
+// tudo e roda de novo a aplicacao do disco. Trocar de perfil sem isto deixava
+// as barras e os episodios do perfil anterior na tela (o arquivo ja e por
+// perfil; a memoria e que nao acompanhava). Temporada/episodio nao sao
+// zerados: sao metadados do titulo, iguais para todo perfil. Devolve quantos
+// reaplicou, para log.
+int cat_reaplicar_progresso(void) {
+  int i, m = cat_n();
+  for (i = 0; i < m; i++) {
+    itens[i].progresso = 0;
+    itens[i].restanteMin = 0;
+    itens[i].nomeEpisodio[0] = 0;
+  }
+  return aplicarProgressoDoDisco();
+}
+
 // TIRA O ITEM DA JANELA DA FILEIRA QUE O CONTEM. Issue #22.
 //
 // cat_zerar_progresso, logo abaixo, apaga o que a legenda desenha — mas o card
@@ -944,6 +967,14 @@ void cat_definir(const CatItem *lista, int qtd) {
   cat_definir_tudo(lista, qtd, NULL, 0);
 }
 
+// Quantas publicacoes (troca de bloco ou de fileiras) ja aconteceram. A troca
+// de perfil usa para saber quando dados novos chegaram a tela: tira o retrato
+// do contador ao pedir a remontagem e considera pronto na proxima mudanca
+// (ou no teto de segundos, se a rede nao responder). volatile como buscando
+// em descoberta.c, pelo mesmo motivo.
+static volatile unsigned publicacoes;
+unsigned cat_publicacoes(void) { return publicacoes; }
+
 void cat_republicar_fileiras(const CatFileira *novasFils, int nNovas) {
   int k, q, v = 0;
   if (!novasFils || nNovas < 1 || n < 1) return;
@@ -957,6 +988,7 @@ void cat_republicar_fileiras(const CatFileira *novasFils, int nNovas) {
     fils[v++] = f;
   }
   nFils = v;
+  publicacoes++;
 }
 
 void cat_definir_tudo(const CatItem *lista, int qtd,
@@ -1017,6 +1049,7 @@ void cat_definir_tudo(const CatItem *lista, int qtd,
   // que uma linha da conta que antes nao casava com nada passa a casar, quando
   // o titulo dela entra no catalogo.
   aplicarProgressoDoDisco();
+  publicacoes++;
 }
 
 void cat_definir_episodios(int indiceItem, const CatEp *lista, int qtd) {

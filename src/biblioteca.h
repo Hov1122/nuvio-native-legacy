@@ -20,6 +20,11 @@ void biblioteca_encerrar(void);
 // grade e filtrada, e quem abre o detalhe precisa do item real).
 int  biblioteca_pediu_abrir(int *indiceCatalogo);
 
+// ESQUERDA na primeira coluna pede o menu lateral (consome o pedido, como
+// home_pediu_menu). Sem isto a biblioteca era a única tela onde a barra não
+// abria.
+int  biblioteca_pediu_menu(void);
+
 // Estado de conta, em memoria. Exposto porque quem marca um titulo e a tela de
 // detalhe (o botao "+"), nao a biblioteca: sem isto a aba "Minha Lista" so
 // poderia ser alimentada por dentro deste modulo, e o "+" do detalhe nao teria

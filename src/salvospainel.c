@@ -77,7 +77,7 @@
 // Copiar custa ~150 KB estaticos para 200 linhas. E o preco de nao depender do
 // tempo de vida de um bloco que outro modulo troca sem avisar.
 typedef struct {
-  char  titulo[160], poster[512], meta[96];
+  char  titulo[160], poster[512], fundo[512], meta[96];
   char  id[24];
   int   serie;
   int   nota;
@@ -157,7 +157,10 @@ static void reconstruir(void) {
         l->episodio  = c->episodio;
         l->restanteMin = c->restanteMin;
         if (c->nota > 0) l->nota = c->nota;
-        if (c->poster[0]) snprintf(l->poster, sizeof l->poster, "%s", c->poster);
+        if (c->poster[0] || c->backdrop[0])
+          snprintf(l->poster, sizeof l->poster, "%s",
+                   c->poster[0] ? c->poster : c->backdrop);
+        snprintf(l->fundo, sizeof l->fundo, "%s", c->backdrop);
         if (c->meta[0])   snprintf(l->meta, sizeof l->meta, "%s", c->meta);
         if (ehSerie(c->tipo, c->nTemporadas)) l->serie = 1;
       }
@@ -172,7 +175,9 @@ static void reconstruir(void) {
     memset(l, 0, sizeof *l);
     snprintf(l->id, sizeof l->id, "%s", c->imdb);
     snprintf(l->titulo, sizeof l->titulo, "%s", c->titulo);
-    snprintf(l->poster, sizeof l->poster, "%s", c->poster);
+    snprintf(l->poster, sizeof l->poster, "%s",
+             c->poster[0] ? c->poster : c->backdrop);
+    snprintf(l->fundo, sizeof l->fundo, "%s", c->backdrop);
     snprintf(l->meta, sizeof l->meta, "%s", c->meta);
     l->nota   = c->nota;
     l->serie  = ehSerie(c->tipo, c->nTemporadas);
@@ -342,8 +347,17 @@ static void desenhaLinha(int i, float dx, float y, float a) {
   }
 
   { GLuint tex = l->poster[0] ? tex_obter(l->poster) : 0;
+    const char *usada = l->poster;
+    // Poster morto (404), fundo vivo: sem isto a linha ficava no esqueleto
+    // com so o titulo. So quando o cache decretou FALHOU; carregando mostra
+    // esqueleto, e o aspecto acompanha quem ganhou.
+    if (!tex && l->poster[0] && tex_falhou(l->poster) && l->fundo[0] &&
+        strcmp(l->fundo, l->poster)) {
+      tex = tex_obter(l->fundo);
+      if (tex) usada = l->fundo;
+    }
     if (tex) {
-      gfx_tex_aspect_atual = tex_aspecto(l->poster);
+      gfx_tex_aspect_atual = tex_aspecto(usada);
       gfx_rect(poster, tex, GFX_CARD, 0.0f, 0.0f, 0.0f, 0.08f, 0, 0, 0, a);
       gfx_tex_aspect_atual = 0.0f;
     } else {

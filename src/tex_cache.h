@@ -58,6 +58,11 @@ const char *tex_arquivo(const char *url);
 // Necessaria para o "cover" do shader — sem ela a arte estica.
 float tex_aspecto(const char *caminho);
 
+// 1 quando o caminho ja FALHOU (e nao esta so carregando). Para cair na arte
+// reserva sem esperar o recuo: cartaz com poster morto e backdrop vivo nao
+// fica cinza a sessao inteira. Ver a nota em tex_cache.c.
+int tex_falhou(const char *caminho);
+
 // 1 quando a arte e uma marca ESCURA E ACROMATICA — o caso do logo preto — e
 // portanto deve ser desenhada tingida (GFX_MARCA) em vez de com as cores dela.
 //

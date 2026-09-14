@@ -107,7 +107,7 @@ void sintro_primeira_vez(void) {
   // O foco NASCE na opcao em vigor, e nao sempre na primeira: o cartao e um
   // mapa de onde a pessoa esta, e comecar em outra linha faria ela ler que a
   // escolha ja mudou. Mesma regra de menu_abrir.
-  foco = ajustes_salvos_no_trakt() ? 1 : 0;
+  foco = ajustes_salvos_no_simkl() ? 1 : 0;
   memset(animFoco, 0, sizeof animFoco);
   juntarMinis();
 }
@@ -119,7 +119,7 @@ void sintro_evento(const SDL_Event *e) {
   if (k == SDLK_DOWN) { if (foco < 1) foco++; return; }
   if (k == SDLK_UP)   { if (foco > 0) foco--; return; }
   if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) {
-    ajustes_definir_salvos_no_trakt(foco == 1);
+    ajustes_definir_salvos_no_simkl(foco == 1);
     aberto = 0;
     marcarVisto();
     return;
@@ -327,14 +327,14 @@ void sintro_desenhar(Uint32 agora) {
     txt_desenhar_alpha(t, x, y, a * 0.9f); }
   y += 36.0f;
 
-  desenhaOpcao(x, y, animFoco[0], !ajustes_salvos_no_trakt(),
+  desenhaOpcao(x, y, animFoco[0], !ajustes_salvos_no_simkl(),
                "Lista do Nuvio",
                "Fica guardada nesta TV. O que você salvar no celular continua "
                "chegando aqui pela sua conta.", a);
   y += SI_OPCAO_H + 12.0f;
-  desenhaOpcao(x, y, animFoco[1], ajustes_salvos_no_trakt(),
-               "Watchlist do Trakt",
-               "Aparece também nos apps e no site que leem essa conta.", a);
+  desenhaOpcao(x, y, animFoco[1], ajustes_salvos_no_simkl(),
+               "Lista do Simkl",
+               "Entra na sua watchlist do Simkl.", a);
 
   { TxtLinha t = txt_linha_corta(TXT_CAPTION,
         "Você pode mudar isso depois em Ajustes › Interface e conta.",

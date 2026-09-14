@@ -11,7 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static int  notaTrakt, votosTrakt;
 static int  notas[EX_NFONTES];
 static char mdbChave[80];
 static char dirArteEx[512];
@@ -58,9 +57,22 @@ void extras_carregar(const char *dirArte) {
   char caminho[600];
   FILE *f;
   snprintf(dirArteEx, sizeof dirArteEx, "%s", dirArte ? dirArte : ".");
+  // Chave DO PACOTE, como no TMDB (MDBLIST_API_KEY do local.properties).
+  // A da conta, quando existe, continua ganhando (extras_definir_chave chega
+  // depois, pelo sync).
+#ifdef NV_MDBLIST_KEY
+  if (!mdbChave[0] && sizeof(NV_MDBLIST_KEY) > 1) {
+    snprintf(mdbChave, sizeof mdbChave, "%s", NV_MDBLIST_KEY);
+    printf("[extras] mdblist: chave do pacote\n");
+  }
+#endif
   snprintf(caminho, sizeof caminho, "%s/mdblist.txt", dirArte ? dirArte : ".");
   f = fopen(caminho, "r");
-  if (!f) { printf("[extras] mdblist ausente\n"); fflush(stdout); return; }
+  if (!f) {
+    printf("[extras] mdblist %s\n", mdbChave[0] ? "chave do pacote" : "ausente");
+    fflush(stdout);
+    return;
+  }
   if (fgets(mdbChave, sizeof mdbChave, f)) {
     char *fim = mdbChave + strlen(mdbChave);
     while (fim > mdbChave && (fim[-1] == '\n' || fim[-1] == '\r')) *--fim = 0;
@@ -116,7 +128,7 @@ static int  epFioVivo;
 static char epShow[24];
 static int  epPedTemp, epPedNum;
 static int  nComent;
-static struct { char titulo[120], ano[8], imdb[16], poster[200]; } rel[EX_REL_MAX];
+static struct { char titulo[120], ano[8], imdb[16], poster[200], fundo[200]; } rel[EX_REL_MAX];
 // Vistos: um bit por episodio, ate 40 episodios em 20 temporadas. Vetor fixo
 // porque a consulta acontece no DESENHO de cada card, a cada quadro — uma
 // busca em lista ali custaria mais que a resposta.
@@ -367,23 +379,18 @@ static void *buscar(void *arg) {
   if (!pedidoAindaAtual(id)) { finalizarBusca(id); return NULL; }
 
 
-  // --- nota ---
+  // --- nota (fio morto sem chaves: documenta o formato, nao executa) ---
   snprintf(url, sizeof url, "https://api.trakt.tv/%s/%s/ratings", tipo, id);
   corpo = rede_baixar_com(url, 12, cab);
   if (corpo) {
     int n = para100(js_num(corpo, NULL, "rating", 0.0));
-    int v = (int)js_num(corpo, NULL, "votes", 0.0);
     free(corpo);
     pthread_mutex_lock(&trava);
     if (!strcmp(id, idPedido)) {
-      notaTrakt = n; votosTrakt = v;
-      // Sem chave do mdbList esta e a UNICA nota do Trakt que teremos; com
-      // chave, o passo seguinte sobrescreve com a que o mdbList devolver, que
-      // e a mesma fonte que o web mostra.
       // notaTrakt esta em 0..100 (a api do Trakt devolve 0..10). No vetor a
       // escala e "cru x 10" e a fonte trakt e percentual, entao 6.7 -> 67% ->
-      // 670. Sem esta conversao o cartao mostrava 6.7% quando nao havia
-      // mdbList.
+      // 670. A nota viva vem do imdbRating (ver extras_meta_cinemeta); esta
+      // fica para o dia em que houver chave.
       if (!notas[EX_TRAKT]) notas[EX_TRAKT] = n * 10;
     }
     pthread_mutex_unlock(&trava);
@@ -820,24 +827,123 @@ static void *buscar(void *arg) {
   return NULL;
 }
 
-// Keyless trailer fetch (see buscarTrailersCinemeta below). Declared here so
+// Keyless meta fetch (see buscarMetaCinemeta below). Declared here so
 // extras_pedir can use it; defined further down next to the trailer store.
 struct TrCinePed { char imdb[24]; int serie; };
-static void *buscarTrailersCinemeta(void *arg);
-static void pedirTrailersCinemeta(const char *imdb, int serie) {
+static void *buscarMetaCinemeta(void *arg);
+static void pedirMetaCinemeta(const char *imdb, int serie) {
   struct TrCinePed *p = malloc(sizeof *p);
   pthread_t f;
   if (!p) return;
   snprintf(p->imdb, sizeof p->imdb, "%s", imdb ? imdb : "");
   p->serie = serie;
-  if (pthread_create(&f, NULL, buscarTrailersCinemeta, p) != 0) free(p);
+  if (pthread_create(&f, NULL, buscarMetaCinemeta, p) != 0) free(p);
+  else pthread_detach(f);
+}
+
+// Notas TMDB por episodio (ver buscarNotasTmdb abaixo): declaradas aqui
+// porque extras_meta_cinemeta dispara quando ve buracos.
+struct TmdbNotaPed { char imdb[24]; };
+static int fioNotasVivo;
+static void pedirNotasTmdb(const char *imdb);
+
+// mdblist SEM Trakt: ratings por provedor (v2 POST) + reviews (v1 GET).
+// Fio proprio, destacado do buscar() morto — a chave basta (pacote, arquivo
+// ou conta). Tudo com guarda de titulo; o que nao chega fica em 0 e a secao
+// some, como sempre foi.
+struct MdbPed { char imdb[24]; int serie; };
+static void *buscarMdbList(void *u) {
+  struct MdbPed *p = u;
+  char id[24], chave[80];
+  int serie, k, nRev = 0;
+  if (!p) return NULL;
+  snprintf(id, sizeof id, "%s", p->imdb);
+  serie = p->serie;
+  free(p);
+  pthread_mutex_lock(&trava);
+  snprintf(chave, sizeof chave, "%s", mdbChave);
+  pthread_mutex_unlock(&trava);
+  if (!chave[0] || !id[0]) return NULL;
+  // v2: um POST por provedor, como o web faz (fetchProviderRating): a api
+  // aceita "ids" em lote mas so um provedor por chamada.
+  { const char *cabJ[3];
+    char kj[64], corpoPost[80];
+    snprintf(kj, sizeof kj, "content-type: application/json");
+    cabJ[0] = kj; cabJ[1] = NULL; cabJ[2] = NULL;
+    snprintf(corpoPost, sizeof corpoPost,
+             "{\"ids\":[\"%s\"],\"provider\":\"imdb\"}", id);
+    for (k = 0; k < EX_NFONTES; k++) {
+      char u[300], *rp;
+      snprintf(u, sizeof u, "https://api.mdblist.com/rating/%s/%s?apikey=%s",
+               serie ? "show" : "movie", FONTE[k], chave);
+      rp = rede_postar(u, 12, cabJ, corpoPost);
+      if (!rp) continue;
+      { double v = js_num(rp, NULL, "rating", -1.0);
+        free(rp);
+        if (v >= 0.0) {
+          int c = emDecimos(v);
+          pthread_mutex_lock(&trava);
+          if (!strcmp(id, idPedido)) notas[k] = c;
+          pthread_mutex_unlock(&trava);
+        } }
+    } }
+  // v1 reviews -> comentarios do titulo. A v2 nao devolve texto; a v1 devolve
+  // {author, rating, content} (rating pode ser null -> 0). Sem curtidas aqui:
+  // 0, e a ordem de chegada vale (a API manda os relevantes primeiro).
+  { char u[300], *corpo;
+    snprintf(u, sizeof u, "https://mdblist.com/api/?apikey=%s&i=%s",
+             chave, id);
+    corpo = rede_baixar(u, 15);
+    if (corpo) {
+      struct { char u[40]; char t[420]; int nota; } achado[EX_COMENT_MAX];
+      int n = 0;
+      const char *r = js_array(corpo, NULL, "reviews");
+      while (r && n < EX_COMENT_MAX) {
+        const char *f = js_fim(r);
+        achado[n].u[0] = achado[n].t[0] = 0;
+        js_texto(r, f, "author", achado[n].u, sizeof achado[n].u);
+        js_texto(r, f, "content", achado[n].t, sizeof achado[n].t);
+        achado[n].nota = (int)js_num(r, f, "rating", 0.0);
+        numaLinha(achado[n].t);
+        if (achado[n].t[0]) n++;
+        r = js_prox(f);
+      }
+      free(corpo);
+      pthread_mutex_lock(&trava);
+      if (!strcmp(id, idPedido)) {
+        for (k = 0; k < n; k++) {
+          snprintf(coment[k].user, sizeof coment[k].user, "%s", achado[k].u);
+          snprintf(coment[k].texto, sizeof coment[k].texto, "%s", achado[k].t);
+          coment[k].curtidas = 0;
+          coment[k].nota = achado[k].nota;
+        }
+        nComent = n;
+      }
+      pthread_mutex_unlock(&trava);
+      nRev = n;
+    } }
+  printf("[extras] mdblist %s: reviews=%d\n", id, nRev);
+  fflush(stdout);
+  return NULL;
+}
+static void pedirMdbList(const char *imdb, int serie) {
+  struct MdbPed *p;
+  pthread_t f;
+  if (!mdbChave[0]) return;
+  p = malloc(sizeof *p);
+  if (!p) return;
+  snprintf(p->imdb, sizeof p->imdb, "%s", imdb ? imdb : "");
+  p->serie = serie;
+  if (pthread_create(&f, NULL, buscarMdbList, p) != 0) free(p);
   else pthread_detach(f);
 }
 
 void extras_pedir(const char *imdb, int serie, long tmdbId) {
   char id[24];
   const char *dp;
-  int cine;
+  int idx;
+  int semelhantes[EX_REL_MAX];
+  int nSem = 0, k;
   if (!imdb || imdb[0] != 't') return;
   // O campo do catalogo pode vir com episodio ("tt9737326:2:1"), que e o
   // formato que os addons de fonte usam. O Trakt so conhece o id do TITULO —
@@ -853,22 +959,67 @@ void extras_pedir(const char *imdb, int serie, long tmdbId) {
   snprintf(idPedido, sizeof idPedido, "%s", imdb);
   seriePedido = serie;
   tmdbPedido = tmdbId;
-  notaTrakt = votosTrakt = nComent = nRel = nTemps = nCol = 0;
+  nComent = nRel = nTemps = nCol = 0;
   colNome[0] = 0;
   nTrailer = fichaDur = 0;
   fichaStatus[0] = fichaPaises[0] = fichaCert[0] = fichaLanc[0] = 0;
   memset(vistos, 0, sizeof vistos);
   progressoPronto = proximoT = proximoE = 0;
   memset(notas, 0, sizeof notas);
-  // Movies always get the keyless trailer fetch, with or without Trakt (series
-  // reuse the /meta body desc_episodios already downloads — see the hook
-  // there — instead of downloading it twice). The title tracking above no
-  // longer hides behind trakt_ativo(): without it the row could never fill
-  // for users without Trakt.
-  cine = !serie;
+  pthread_mutex_unlock(&trava);
+  // "Mais como este" sem rede: titulos do MESMO catalogo, cruzando genero e
+  // com os melhores primeiro (cat_similares) — o que o /related do Trakt
+  // respondia, menos a arte de fora. Sincrono e em memoria; a fileira nasce
+  // cheia junto da tela, em vez de chegar uma viagem depois. Roda fora da
+  // trava acima: o catalogo tem a sua propria.
+  idx = cat_indice_por_imdb(id);
+  if (idx >= 0) nSem = cat_similares(idx, semelhantes, EX_REL_MAX);
+  // Zera antes: um `continue` abaixo pula a posicao, e sem isto ela
+  // ressuscitaria o titulo anterior na compactacao.
+  memset(rel, 0, sizeof rel);
+  for (k = 0; k < nSem && k < EX_REL_MAX; k++) {
+    const CatItem *c = cat_item(semelhantes[k]);
+    if (!c || !c->titulo[0] || !c->imdb[0]) continue;
+    snprintf(rel[k].titulo, sizeof rel[k].titulo, "%s", c->titulo);
+    { const char *dp2 = strchr(c->imdb, ':');
+      size_t n2 = dp2 ? (size_t)(dp2 - c->imdb) : strlen(c->imdb);
+      if (n2 >= sizeof rel[k].imdb) n2 = sizeof rel[k].imdb - 1;
+      memcpy(rel[k].imdb, c->imdb, n2); rel[k].imdb[n2] = 0; }
+    // Retrato prefere cartaz e cai no fundo — a mesma regra da home e da
+    // biblioteca: sem isto todo titulo sem poster virava um cartao vazio com
+    // so o nome.
+    snprintf(rel[k].poster, sizeof rel[k].poster, "%s",
+             c->poster[0] ? c->poster
+             : (c->backdrop[0] ? c->backdrop : ""));
+    snprintf(rel[k].fundo, sizeof rel[k].fundo, "%s", c->backdrop);
+    // O ano abre o meta ("2008–2013 · ..."); sem 4 digitos na frente, vazio —
+    // que o desenho tolera, como tolerava o ano ausente do Trakt.
+    rel[k].ano[0] = 0;
+    if (c->meta[0] >= '0' && c->meta[0] <= '9' &&
+        c->meta[1] >= '0' && c->meta[1] <= '9' &&
+        c->meta[2] >= '0' && c->meta[2] <= '9' &&
+        c->meta[3] >= '0' && c->meta[3] <= '9') {
+      memcpy(rel[k].ano, c->meta, 4); rel[k].ano[4] = 0;
+    }
+  }
+  pthread_mutex_lock(&trava);
+  nRel = 0;
+  for (k = 0; k < nSem && k < EX_REL_MAX; k++)
+    if (rel[k].titulo[0] && rel[k].imdb[0]) {
+      if (nRel != k) rel[nRel] = rel[k];
+      nRel++;
+    }
+  printf("[extras] relacionados do catalogo: %d\n", nRel);
+  fflush(stdout);
+  // The keyless meta fetch runs for movies AND series: the desc_episodios
+  // hook below feeds the same data when it downloads the body, but it
+  // short-circuits when the episode track already exists — and then no hook
+  // runs at all. One redundant download per title beats missing ratings; the
+  // setters make the second write idempotent.
   if (fioVivo || !trakt_ativo()) {
     pthread_mutex_unlock(&trava);
-    if (cine) pedirTrailersCinemeta(id, serie);
+    pedirMetaCinemeta(id, serie);
+    pedirMdbList(id, serie);
     return;
   }
   snprintf(idEmCurso, sizeof idEmCurso, "%s", imdb);
@@ -878,11 +1029,9 @@ void extras_pedir(const char *imdb, int serie, long tmdbId) {
   pthread_mutex_unlock(&trava);
   if (pthread_create(&fio, NULL, buscar, NULL) != 0) fioVivo = 0;
   else pthread_detach(fio);
-  if (cine) pedirTrailersCinemeta(id, serie);
+  pedirMetaCinemeta(id, serie);
+  pedirMdbList(id, serie);
 }
-
-int extras_nota_trakt(void)  { return notaTrakt; }
-int extras_votos_trakt(void) { return votosTrakt; }
 
 int extras_n_comentarios(void) { return nComent; }
 const char *extras_comentario_usuario(int i) {
@@ -1051,11 +1200,205 @@ void extras_trailer_cinemeta(const char *imdb, const char *yt) {
   pthread_mutex_unlock(&trava);
 }
 
-// Keyless trailer fetch: Cinemeta /meta carries `trailers[]` (YouTube ids)
-// for movies and series alike, no Trakt and no TMDB key involved. Own
-// detached thread so it never waits on — or blocks — the Trakt-gated
-// buscar(): stale results drop on the idPedido check inside the setter.
-static void *buscarTrailersCinemeta(void *arg) {
+// Rating + episode notes out of a /meta body (trailers keep their own loops
+// and setters). Shared by the keyless fetch below and the desc_episodios
+// hook in descoberta.c, which already holds the same body in memory — neither
+// path downloads twice for it.
+//
+// imdbRating is a STRING in Cinemeta ("9.5"), so js_texto + atof, not js_num;
+// same decimos scale the fontes vector already uses for IMDb (95 = 9.5).
+// videos[] carries season/number/rating per episode: the same temps grid the
+// dead Trakt seasons call used to fill, so the series ratings panel and
+// per-episode badges need no other change. Parsed to a LOCAL grid first and
+// copied under the lock once. Season 0 (specials) stays out, like the web's
+// `value > 0` filter; seasons need not arrive grouped (the specials block
+// sits mid-season), so each video finds its season entry.
+void extras_meta_cinemeta(const char *imdbBase, const char *corpo, int serie) {
+  double imdb = 0.0;
+  char bruto[16] = "";
+  int nt = 0;
+  if (!imdbBase || !imdbBase[0] || !corpo) return;
+  if (js_texto(corpo, NULL, "imdbRating", bruto, sizeof bruto) && bruto[0])
+    imdb = atof(bruto);
+  if (imdb > 0.0) {
+    pthread_mutex_lock(&trava);
+    if (!strcmp(imdbBase, idPedido)) notas[EX_IMDB] = emDecimos(imdb);
+    pthread_mutex_unlock(&trava);
+  }
+  if (serie) {
+    const char *v = js_array(corpo, NULL, "videos");
+    struct { int numero, nEps; struct { int ep, nota; } eps[EX_EP_MAX]; }
+      loc[EX_TEMP_MAX];
+    memset(loc, 0, sizeof loc);
+    while (v && nt < EX_TEMP_MAX) {
+      const char *vf = js_fim(v);
+      int s = (int)js_num(v, vf, "season", -1.0);
+      int e = (int)js_num(v, vf, "number", -1.0);
+      int k;
+      char rbuf[16] = "";
+      if (s > 0 && e > 0) {
+        for (k = 0; k < nt; k++) if (loc[k].numero == s) break;
+        if (k >= nt) { loc[nt].numero = s; loc[nt].nEps = 0; k = nt++; }
+        if (loc[k].nEps < EX_EP_MAX) {
+          int q = loc[k].nEps++;
+          double r = 0.0;
+          loc[k].eps[q].ep = e;
+          if (js_texto(v, vf, "rating", rbuf, sizeof rbuf) && rbuf[0])
+            r = atof(rbuf);
+          loc[k].eps[q].nota = (int)(r * 10.0 + 0.5);
+        }
+      }
+      v = js_prox(vf);
+    }
+    if (nt > 0) {
+      pthread_mutex_lock(&trava);
+      if (!strcmp(imdbBase, idPedido)) {
+        memcpy(temps, loc, sizeof temps);
+        nTemps = nt;
+      }
+      pthread_mutex_unlock(&trava);
+    }
+  }
+  printf("[extras] cinemeta %s: imdb=%.1f temps=%d\n", imdbBase, imdb, nt);
+  fflush(stdout);
+  // Buracos (nota 0) vao ao TMDB quando ha chave: o Cinemeta zera o que nao
+  // tem (Silo vem todo "0"), e o /tv/{id}/season/{n} tem vote_average por
+  // episodio. So series, so buracos — o que o Cinemeta deu continua valendo.
+  if (serie && nt > 0 && desc_chave_tmdb()[0] && !fioNotasVivo)
+    pedirNotasTmdb(imdbBase);
+}
+
+// Nota de episodios vinda do TMDB: corpo de /tv/{id}/season/{n} em pares
+// (numero, decimos). Publica para teste (fixture em tests/).
+int extras_tmdb_temporada_ler(const char *corpo, int *epOut, int *notaOut,
+                              int max) {
+  const char *v;
+  int n = 0;
+  if (!corpo || !epOut || !notaOut || max <= 0) return 0;
+  v = js_array(corpo, NULL, "episodes");
+  while (v && n < max) {
+    const char *vf = js_fim(v);
+    int e = (int)js_num(v, vf, "episode_number", -1.0);
+    double r = js_num(v, vf, "vote_average", 0.0);
+    if (e > 0 && r > 0.0) {
+      epOut[n] = e;
+      notaOut[n] = (int)(r * 10.0 + 0.5);
+      n++;
+    }
+    v = js_prox(vf);
+  }
+  return n;
+}
+
+// Preenche os buracos de nota (0) das temporadas com o vote_average do TMDB:
+// uma viagem por temporada com buraco, so para serie com chave. Fio proprio,
+// guarda de titulo em cada escrita; sem chave ou sem buraco, nem nasce (ver
+// o disparo no fim de extras_meta_cinemeta).
+static void *buscarNotasTmdb(void *u) {
+  struct TmdbNotaPed *p = u;
+  char id[24];
+  long idSerie = 0;
+  int temporadas[EX_TEMP_MAX], nT = 0, t;
+  if (!p) goto fim;
+  snprintf(id, sizeof id, "%s", p->imdb);
+  free(p);
+  pthread_mutex_lock(&trava);
+  if (strcmp(id, idPedido)) { pthread_mutex_unlock(&trava); goto fim; }
+  idSerie = tmdbPedido;
+  for (t = 0; t < nTemps && nT < EX_TEMP_MAX; t++) {
+    int i, buraco = 0;
+    for (i = 0; i < temps[t].nEps; i++)
+      if (temps[t].eps[i].nota <= 0) { buraco = 1; break; }
+    if (buraco) temporadas[nT++] = temps[t].numero;
+  }
+  pthread_mutex_unlock(&trava);
+  if (!nT) goto fim;
+  if (idSerie <= 0) {
+    char url[400], *corpo;
+    snprintf(url, sizeof url,
+             "https://api.themoviedb.org/3/find/%s?api_key=%s"
+             "&external_source=imdb_id",
+             id, desc_chave_tmdb());
+    corpo = rede_baixar(url, 15);
+    if (corpo) {
+      const char *v = js_array(corpo, NULL, "tv_results");
+      if (v) idSerie = (long)js_num(v, js_fim(v), "id", 0.0);
+      free(corpo);
+    }
+  }
+  if (idSerie <= 0) goto fim;
+  for (t = 0; t < nT; t++) {
+    char url[400], *corpo;
+    int eps[EX_EP_MAX], notas[EX_EP_MAX], n = 0, preenchidos = 0;
+    snprintf(url, sizeof url,
+             "https://api.themoviedb.org/3/tv/%ld/season/%d?api_key=%s",
+             idSerie, temporadas[t], desc_chave_tmdb());
+    corpo = rede_baixar(url, 15);
+    if (!corpo) continue;
+    n = extras_tmdb_temporada_ler(corpo, eps, notas, EX_EP_MAX);
+    free(corpo);
+    pthread_mutex_lock(&trava);
+    if (!strcmp(id, idPedido)) {
+      int ti;
+      for (ti = 0; ti < nTemps; ti++) {
+        int i, k;
+        if (temps[ti].numero != temporadas[t]) continue;
+        for (i = 0; i < temps[ti].nEps; i++) {
+          if (temps[ti].eps[i].nota > 0) continue;
+          for (k = 0; k < n; k++)
+            if (eps[k] == temps[ti].eps[i].ep) {
+              temps[ti].eps[i].nota = notas[k];
+              preenchidos++;
+              break;
+            }
+        }
+      }
+    }
+    pthread_mutex_unlock(&trava);
+    if (preenchidos) {
+      printf("[extras] tmdb notas %s T%d: %d preenchidos\n",
+             id, temporadas[t], preenchidos);
+      fflush(stdout);
+    }
+  }
+fim:
+  pthread_mutex_lock(&trava);
+  fioNotasVivo = 0;
+  pthread_mutex_unlock(&trava);
+  return NULL;
+}
+static void pedirNotasTmdb(const char *imdb) {
+  struct TmdbNotaPed *p;
+  pthread_t f;
+  if (!imdb || !imdb[0]) return;
+  pthread_mutex_lock(&trava);
+  if (fioNotasVivo) { pthread_mutex_unlock(&trava); return; }
+  fioNotasVivo = 1;
+  pthread_mutex_unlock(&trava);
+  p = malloc(sizeof *p);
+  if (!p) {
+    pthread_mutex_lock(&trava);
+    fioNotasVivo = 0;
+    pthread_mutex_unlock(&trava);
+    return;
+  }
+  snprintf(p->imdb, sizeof p->imdb, "%s", imdb);
+  if (pthread_create(&f, NULL, buscarNotasTmdb, p) != 0) {
+    free(p);
+    pthread_mutex_lock(&trava);
+    fioNotasVivo = 0;
+    pthread_mutex_unlock(&trava);
+    return;
+  }
+  pthread_detach(f);
+}
+
+// Keyless meta fetch: Cinemeta /meta carries `trailers[]` (YouTube ids) for
+// movies and series alike — no Trakt and no TMDB key involved. Own detached
+// thread so it never waits on — or blocks — the Trakt-gated buscar(): stale
+// results drop on the idPedido check inside the setters. Ratings and episode
+// notes come from extras_meta_cinemeta above, over the same body.
+static void *buscarMetaCinemeta(void *arg) {
   struct TrCinePed *p = arg;
   char url[200], *corpo;
   if (!p || !p->imdb[0]) { free(p); return NULL; }
@@ -1076,6 +1419,7 @@ static void *buscarTrailersCinemeta(void *arg) {
       }
       t = js_prox(tf);
     }
+    extras_meta_cinemeta(p->imdb, corpo, p->serie);
     free(corpo);
     if (n > 0) {
       printf("[extras] trailers via cinemeta: %d\n", n);
@@ -1121,26 +1465,53 @@ const char *extras_relacionado_imdb(int i) {
 const char *extras_relacionado_poster(int i) {
   return (i >= 0 && i < nRel) ? rel[i].poster : "";
 }
+// Segunda arte do relacionado (backdrop), para quando o poster morreu (404).
+// Vazia quando nao ha — o desenho decide sozinho.
+const char *extras_relacionado_fundo(int i) {
+  return (i >= 0 && i < nRel) ? rel[i].fundo : "";
+}
 
 int extras_ep_visto(int temporada, int episodio) {
+  char id[24];
+  int visto;
   if (temporada < 0 || temporada >= EX_VIS_T) return 0;
   if (episodio < 0 || episodio >= EX_VIS_E) return 0;
   pthread_mutex_lock(&trava);
-  int visto = vistos[temporada][episodio];
+  visto = vistos[temporada][episodio];
+  snprintf(id, sizeof id, "%s", idPedido);
   pthread_mutex_unlock(&trava);
+  // The Trakt watched map above no longer fills (no keys); the account +
+  // local map in vistoep does (syncep pull + TV marks). Same answer when
+  // both agree; unknown (-1) is not seen.
+  if (!visto && id[0] && vistoep_estado(id, temporada, episodio) == 1) visto = 1;
   return visto;
 }
 
 int extras_progresso_pronto(void) {
   pthread_mutex_lock(&trava);
-  int pronto = progressoPronto;
+  // The episode map, not the Trakt flag: temps now comes from Cinemeta, so
+  // "known" means videos[] arrived for this title. Without a map nobody may
+  // infer unwatched from unknown.
+  int pronto = progressoPronto || nTemps > 0;
   pthread_mutex_unlock(&trava);
   return pronto;
 }
 int extras_proximo_episodio(int *t, int *e) {
+  char id[24];
+  int i, j, ok = 0, pt = 0, pe = 0;
   pthread_mutex_lock(&trava);
-  int ok = progressoPronto && proximoT > 0 && proximoE > 0;
-  if (ok) { *t = proximoT; *e = proximoE; }
+  snprintf(id, sizeof id, "%s", idPedido);
+  // First episode not known-seen, in list order — what Trakt's next_episode
+  // answered, now derived from the Cinemeta grid + the vistoep map. Unknown
+  // counts as next (a show nobody touched starts at its first episode); all
+  // seen gives 0 and the caller falls back.
+  for (i = 0; i < nTemps && !ok; i++)
+    for (j = 0; j < temps[i].nEps; j++) {
+      int st = id[0] ? vistoep_estado(id, temps[i].numero, temps[i].eps[j].ep)
+                     : -1;
+      if (st != 1) { pt = temps[i].numero; pe = temps[i].eps[j].ep; ok = 1; break; }
+    }
   pthread_mutex_unlock(&trava);
+  if (ok) { if (t) *t = pt; if (e) *e = pe; }
   return ok;
 }

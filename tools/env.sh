@@ -25,6 +25,7 @@ TRS=$(valor TRAKT_CLIENT_SECRET)
 SMK=$(valor SIMKL_CLIENT_ID)
 SMA=$(valor SIMKL_APP_NAME)
 TMD=$(valor TMDB_API_KEY)
+MDB=$(valor MDBLIST_API_KEY)
 
 if [ -z "$URL" ] || [ -z "$KEY" ]; then
   # Falhar em silencio produziria um .ipk que abre, mostra a tela de login e
@@ -48,10 +49,11 @@ if [ "$1" = "--env-file" ]; then
     printf 'NV_SIMKL_CLIENT_ID=%s\n' "$SMK"
     printf 'NV_SIMKL_APP=%s\n' "$SMA"
     printf 'NV_TMDB_API_KEY=%s\n' "$TMD"
+    printf 'NV_MDBLIST_KEY=%s\n' "$MDB"
   } > "$2"
   chmod 600 "$2"
   exit 0
 fi
 
-printf -- '-DNV_SUPABASE_URL=\\"%s\\" -DNV_SUPABASE_ANON_KEY=\\"%s\\" -DNV_TV_LOGIN_BASE=\\"%s\\" -DNV_TRAKT_CLIENT_ID=\\"%s\\" -DNV_TRAKT_CLIENT_SECRET=\\"%s\\" -DNV_SIMKL_CLIENT_ID=\\"%s\\" -DNV_SIMKL_APP=\\"%s\\" -DNV_TMDB_API_KEY=\\"%s\\"' \
-  "$URL" "$KEY" "$TVB" "$TRK" "$TRS" "$SMK" "$SMA" "$TMD"
+printf -- '-DNV_SUPABASE_URL=\\"%s\\" -DNV_SUPABASE_ANON_KEY=\\"%s\\" -DNV_TV_LOGIN_BASE=\\"%s\\" -DNV_TRAKT_CLIENT_ID=\\"%s\\" -DNV_TRAKT_CLIENT_SECRET=\\"%s\\" -DNV_SIMKL_CLIENT_ID=\\"%s\\" -DNV_SIMKL_APP=\\"%s\\" -DNV_TMDB_API_KEY=\\"%s\\" -DNV_MDBLIST_KEY=\\"%s\\"' \
+  "$URL" "$KEY" "$TVB" "$TRK" "$TRS" "$SMK" "$SMA" "$TMD" "$MDB"

@@ -14,31 +14,36 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
+# rg nem sempre existe (Linux sem ripgrep): grep -P entende os mesmos padroes
+# PCRE usados abaixo. Todas as buscas sao de arquivo unico, entao o -n devolve
+# "linha:texto" nos dois.
+if command -v rg >/dev/null 2>&1; then RG=rg; else RG="grep -P"; fi
+
 cc -fsyntax-only src/detail.c \
   -Isrc -I/opt/homebrew/include -I/opt/homebrew/include/SDL2 \
   -Wno-deprecated-declarations -Wno-macro-redefined
 
 # Ninguem le a fileira com a coluna crua. As duas formas abaixo sao exatamente
 # as que existiam antes do conserto.
-if rg -q 'cat_episodio\(idx, foco\.coluna\)' src/detail.c; then
+if $RG -q 'cat_episodio\(idx, foco\.coluna\)' src/detail.c; then
   echo 'detail: cat_episodio(idx, foco.coluna) e indice RELATIVO em vetor ABSOLUTO' >&2
   exit 1
 fi
-if rg -q 'cat_episodio\(idx, c\)' src/detail.c; then
+if $RG -q 'cat_episodio\(idx, c\)' src/detail.c; then
   echo 'detail: cat_episodio(idx, c) e indice RELATIVO em vetor ABSOLUTO' >&2
   exit 1
 fi
 
 # E a contagem da secao conta o que a fileira mostra, nao a serie inteira: com
 # cat_n_episodios aqui o foco andaria por colunas que nao existem.
-rg -q 'case SEC_EPISODIOS: \{\s*$' src/detail.c
-rg -q 'int q = epVisiveis\(\);' src/detail.c
-if rg -q 'int q = cat_n_episodios\(idx\);' src/detail.c; then
+$RG -q 'case SEC_EPISODIOS: \{\s*$' src/detail.c
+$RG -q 'int q = epVisiveis\(\);' src/detail.c
+if $RG -q 'int q = cat_n_episodios\(idx\);' src/detail.c; then
   echo 'detail: secaoN conta a serie inteira, nao a temporada em exibicao' >&2
   exit 1
 fi
 
 # O desenho do card tambem passa pelo mapeamento.
-rg -q 'const CatEp \*ep = cat_episodio\(idx, epAbsoluto\(c\)\);' src/detail.c
+$RG -q 'const CatEp \*ep = cat_episodio\(idx, epAbsoluto\(c\)\);' src/detail.c
 
 echo 'detail eps: PASS'

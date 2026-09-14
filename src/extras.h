@@ -1,11 +1,11 @@
-// O que as ABAS da tela de titulo mostram alem do elenco: nota do Trakt,
-// comentarios do Trakt e titulos relacionados.
+// O que as ABAS da tela de titulo mostram alem do elenco: nota do IMDb,
+// episodios com nota, titulos relacionados e o mapa de vistos.
 //
-// Tudo isto ja existe no app web (renderExternalRatingsRow, a secao de
-// comentarios e a aba "Mais como este"), e nenhum dos tres tinha fonte no port
-// — por isso as abas caiam em "Sem informacao". Todos os pedidos falam com a
-// api.trakt.tv por IMDb id, sem traducao de identificador no meio: o Trakt
-// resolve "tt1234567" direto, e o TMDB nao.
+// Tudo isto ja existe no app web (renderExternalRatingsRow, o painel de notas
+// por episodio e a aba "Mais como este"). As fontes aqui sao sem chave: o
+// /meta do Cinemeta (nota, episodios, trailers), o catalogo local
+// (relacionados) e a conta Nuvio + marcas locais (vistos via vistoep).
+// Comentarios ficaram sem fonte keyless e a secao segue oculta.
 #ifndef NV_EXTRAS_H
 #define NV_EXTRAS_H
 
@@ -18,21 +18,29 @@
 // que o TMDB expoe apenas por id proprio — nao ha caminho por IMDb.
 void extras_pedir(const char *imdb, int serie, long tmdbId);
 
-// Nota do Trakt em 0..100 (0 = ainda nao chegou ou nao existe) e quantos
-// votaram. O web mostra a mesma nota que o mdbList devolve para "trakt".
-int  extras_nota_trakt(void);
-int  extras_votos_trakt(void);
+// Nota e episodios do corpo /meta do Cinemeta, sem rede nova: imdbRating
+// ("9.5") alimenta a fonte EX_IMDB e o videos[] com season/number/rating
+// alimenta a grade de temporadas. Idempotente e com guarda de titulo — pode
+// ser chamada pelo fetch proprio e pelo hook de desc_episodios com o mesmo
+// corpo. E o que acende nota, episodios e retomada sem Trakt e sem chave.
+void extras_meta_cinemeta(const char *imdbBase, const char *corpo, int serie);
+
+// Pares (numero, decimos) do corpo de /tv/{id}/season/{n} do TMDB, so com
+// voto (vote_average 0 fica de fora). Publica para teste (fixture em tests).
+int extras_tmdb_temporada_ler(const char *corpo, int *epOut, int *notaOut,
+                              int max);
 
 // FONTES DE NOTA, na ordem em que o web as lista (renderExternalRatingsRow,
-// metaDetailsScreen.js:3410). Todas menos IMDb e Trakt vem do mdbList, que
-// precisa da chave do dono em art/mdblist.txt; sem o arquivo elas ficam em 0 e
-// a fileira mostra so as duas que temos por conta propria.
+// metaDetailsScreen.js:3410). Todas menos IMDb vem do mdbList, que precisa da
+// chave: pacote (MDBLIST_API_KEY), art/mdblist.txt ou conta, nesta ordem de
+// precedencia reversa. Sem chave a fileira mostra so o IMDb, que sai do /meta
+// do Cinemeta sem chave.
 typedef enum {
   EX_TRAKT, EX_IMDB, EX_TMDB, EX_TOMATOES, EX_AUDIENCE, EX_METACRITIC,
   EX_LETTERBOXD, EX_NFONTES
 } ExFonte;
 
-// Le art/mdblist.txt. Sem ele o modulo funciona com Trakt e IMDb apenas.
+// Le art/mdblist.txt. Sem ele o modulo funciona com o IMDb apenas.
 void extras_carregar(const char *dirArte);
 
 // Chave do mdblist vinda da CONTA. Mesmo motivo do TMDB: enquanto sair de
@@ -114,9 +122,9 @@ const char *extras_colecao_titulo(int i);
 const char *extras_colecao_ano(int i);
 long extras_colecao_tmdb(int i);
 
-// EPISODIOS JA ASSISTIDOS, do Trakt (/shows/<id>/progress/watched). O card do
-// episodio ganha uma mascara e um check quando o dono ja viu. Sem isto, quem
-// acompanha uma serie nao tinha como saber onde parou olhando a lista.
+// EPISODIOS JA ASSISTIDOS, via vistoep (conta Nuvio + marcas locais). O card
+// do episodio ganha uma mascara e um check quando o dono ja viu. Sem isto,
+// quem acompanha uma serie nao tinha como saber onde parou olhando a lista.
 int  extras_ep_visto(int temporada, int episodio);
 // 1 apenas depois de receber o historico desta obra. Sem resposta nao inferir
 // que todos os episodios estao por assistir.
@@ -166,8 +174,12 @@ int  extras_n_relacionados(void);
 const char *extras_relacionado_titulo(int i);
 const char *extras_relacionado_ano(int i);
 const char *extras_relacionado_imdb(int i);
-// Poster do relacionado (URL). Vem de `extended=images` do Trakt, que devolve o
-// caminho sem esquema — o https e acrescentado aqui.
+// Poster do relacionado (URL). No caminho do catalogo e o poster do item
+// (com queda para o backdrop); no legado do Trakt vinha de
+// `extended=images`, com o https acrescentado aqui.
 const char *extras_relacionado_poster(int i);
+// Segunda arte (backdrop) do relacionado, para quando o poster morreu. Vazia
+// quando nao ha.
+const char *extras_relacionado_fundo(int i);
 
 #endif

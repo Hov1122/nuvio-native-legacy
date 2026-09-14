@@ -1,8 +1,8 @@
 #include "ctxmenu.h"
+#include "simkl.h"
 #include "catalogo.h"
 #include "descoberta.h"
 #include "syncprog.h"
-#include "trakt.h"
 #include "extras.h"
 #include "gfx.h"
 #include "text.h"
@@ -15,11 +15,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// Mantem o header publico de Trakt estavel: estas leituras sao o contrato
-// interno entre a modal e as escritas assincronas do proprio port.
-extern int trakt_operacao_estado(int tipo);
-extern int trakt_watchlist_tipo(const char *imdb, const char *tipo, int adicionar);
-extern int trakt_assistido_tipo(const char *imdb, const char *tipo, int marcar);
+// Leituras do catalogo: o contrato interno entre a modal e o estado que as
+// acoes abaixo espelham.
 extern int cat_historico_estado_item(int indice);
 extern void cat_historico_definir_id(const char *imdb, const char *tipo, int visto);
 
@@ -163,7 +160,7 @@ static void montar(void) {
   // que nao faz nada. `progresso` e o campo que a home usa para decidir se
   // desenha a barra, entao a condicao aqui e a mesma que poe o item na fileira.
   //
-  // Distinta de "marcar como assistido": aquela e historico no Trakt e vale
+  // Distinta de "marcar como assistido": aquela e historico no Simkl e vale
   // para o titulo; esta apaga a POSICAO DE RETOMADA local, que e o que faz o
   // card aparecer na fileira. Quem terminou um filme quer as duas; quem
   // desistiu no meio quer so esta.
@@ -235,20 +232,15 @@ static void aplicar(void) {
       // acontece fora do jogo de estados abaixo; ver salvos.h para por que ele
       // e o unico destino que sobrevive ao fechamento do app.
       salvos_definir(ci, intencao);
-      if (ajustes_salvos_no_trakt()) {
-        if (!trakt_watchlist_tipo(ci->imdb, ci->tipo, intencao))
-          estadoOperacao = CTX_FALHA;
-      } else {
-        // SEM TRAKT NAO HA O QUE ESPERAR, e deixar CTX_PENDENTE aqui seria um
-        // modal travado para sempre: ctx_atualizar so sai da espera consultando
-        // trakt_operacao_estado, e nenhuma operacao foi aberta la. A escrita
-        // local ja terminou, entao o estado correto e "confirmada" — e e ele
-        // que faz o espelho (cat_definir_na_lista) rodar no proximo quadro.
-        estadoOperacao = CTX_CONFIRMADA;
-        espelhoAplicado = 1;
-        cat_definir_na_lista(atual, intencao);
-        desc_remontar_fileiras();
-      }
+      if (ajustes_salvos_no_simkl())
+        simkl_lista(ci->imdb, ci->tipo, intencao);
+      // Sem espera: a escrita local ja terminou e o Simkl sincroniza atras,
+      // sem travar o modal. O estado "confirmada" e o que faz o espelho
+      // (cat_definir_na_lista) rodar no proximo quadro.
+      estadoOperacao = CTX_CONFIRMADA;
+      espelhoAplicado = 1;
+      cat_definir_na_lista(atual, intencao);
+      desc_remontar_fileiras();
       montar();
       break;
     case OP_ASSISTIDO:
@@ -259,8 +251,47 @@ static void aplicar(void) {
       operacao = CTX_OP_HISTORICO;
       espelhoAplicado = 0;
       estadoOperacao = CTX_PENDENTE;
-      if (!trakt_assistido_tipo(ci->imdb, ci->tipo, intencao))
+      // So o Simkl, resolvido na hora: simkl_marcar diz na volta se o post
+      // saiu. Sem vinculo fica FALHA — uma marca local silenciosa que some
+      // no reinicio seria a mentira que este codigo evita.
+      if (simkl_marcar(ci->imdb, ci->tipo, ci->temporada, ci->episodio,
+                       intencao)) {
+        estadoOperacao = CTX_CONFIRMADA;
+        // ESPELHO NA HORA, e nao numa votacao posterior: a escrita e
+        // sincrona (o fio do post ja saiu), entao nao ha transicao PENDENTE
+        // para um observador aplicar depois. Sem isto o "confirmado" nao
+        // mudava nada na tela.
+        cat_historico_definir_id(ci->imdb, ci->tipo, intencao);
+        // MARCAR COMO ASSISTIDO APAGA A POSICAO DE RETOMADA.
+        //
+        // cat_historico_definir_id so escreve numa tabela lateral de
+        // historico, e a fileira "Continuar assistindo" nao le dela: ela
+        // le progresso/restanteMin/temporada/episodio do proprio item. Sem
+        // isto o card continuava ali com a barra cheia depois de o titulo
+        // ter sido marcado como visto — o "removo do watch e o card nao
+        // sai" do relato.
+        //
+        // E o MESMO par que "Tirar de Continuar assistindo" faz, e pelo
+        // mesmo motivo: quem terminou nao tem o que retomar. So na direcao
+        // "assistido"; desmarcar nao inventa uma posicao que ninguem gravou.
+        if (intencao) {
+          char chave[192];
+          prog_chave(chave, sizeof chave, ci->imdb, ci->temporada, ci->episodio);
+          prog_remover(chave);
+          // A mesma segunda fonte de "Tirar de Continuar assistindo": quem
+          // marcou como visto tambem nao quer o card de retomada de volta
+          // no proximo ciclo.
+          syncprog_remover(chave);
+          cat_zerar_progresso(atual);
+        }
+        espelhoAplicado = 1;
+        // A HOME TEM DE MUDAR NA HORA: nenhuma fileira le a tabela lateral
+        // de historico, e sem remontar a mudanca so aparecia no ciclo
+        // seguinte — o "tiro de assistido e a home nao da refresh" do relato.
+        desc_remontar_fileiras();
+      } else {
         estadoOperacao = CTX_FALHA;
+      }
       montar();
       break;
     case OP_TIRAR_CONTINUAR: {
@@ -270,18 +301,16 @@ static void aplicar(void) {
       char chave[192];
       prog_chave(chave, sizeof chave, ci->imdb, ci->temporada, ci->episodio);
       prog_remover(chave);
-      // AS TRES FONTES, e nao so a local — issue #22.
+      // AS DUAS FONTES, e nao so a local — issue #22.
       //
-      // A fileira de retomada e a fusao de tres coisas: o registro local, o
-      // /sync/playback do Trakt e o progresso da conta Nuvio. Apagar so a
-      // local fazia a entrada voltar no ciclo seguinte, vinda de qualquer uma
-      // das outras duas: "seleciono remover, o prompt some e nada e removido...
-      // nao consigo remover".
+      // A fileira de retomada e a fusao de duas coisas: o registro local e o
+      // progresso da conta Nuvio. Apagar so a local fazia a entrada voltar no
+      // ciclo seguinte, vinda da outra: "seleciono remover, o prompt some e
+      // nada e removido... nao consigo remover".
       //
-      // Nenhuma das duas remotas e obrigatoria: quem nao tem Trakt nao tem id
-      // de playback, quem nao tem conta nao tem RPC. As duas dizem no log o que
-      // fizeram, e a local acontece de qualquer jeito.
-      trakt_playback_remover(ci->imdb);
+      // A remota nao e obrigatoria: quem nao tem conta nao tem RPC, e ela diz
+      // no log o que fez. A local acontece de qualquer jeito. (O Simkl nao
+      // tem chamada de "apagar retomada": a sessao de la expira sozinha.)
       syncprog_remover(chave);
       // Efeito local e imediato: sem zerar o campo, o card so sairia da fileira
       // na proxima remontagem do catalogo, e para quem apertou parece que nada
@@ -349,60 +378,9 @@ void ctx_atualizar(float dt, Uint32 agora) {
 
   atual = indiceAtual();
   if (aberto && atual < 0) { aberto = 0; return; }
-
-  if (operacao != CTX_OP_NENHUMA && estadoOperacao == CTX_PENDENTE) {
-    int novo = trakt_operacao_estado(operacao);
-    if (novo == CTX_CONFIRMADA || novo == CTX_FALHA) {
-      estadoOperacao = novo;
-      if (!espelhoAplicado && atual >= 0) {
-        const CatItem *ci = cat_item(atual);
-        if (ci && novo == CTX_CONFIRMADA) {
-          if (operacao == CTX_OP_LISTA) {
-            cat_definir_na_lista(atual, intencao);
-          } else {
-            cat_historico_definir_id(ci->imdb, ci->tipo, intencao);
-            // MARCAR COMO ASSISTIDO APAGA A POSICAO DE RETOMADA.
-            //
-            // cat_historico_definir_id so escreve numa tabela lateral de
-            // historico, e a fileira "Continuar assistindo" nao le dela: ela
-            // le progresso/restanteMin/temporada/episodio do proprio item. Sem
-            // isto o card continuava ali com a barra cheia depois de o titulo
-            // ter sido marcado como visto — o "removo do watch e o card nao
-            // sai" do relato.
-            //
-            // E o MESMO par que "Tirar de Continuar assistindo" faz logo
-            // abaixo, e pelo mesmo motivo: quem terminou nao tem o que
-            // retomar. So na direcao "assistido"; desmarcar nao inventa uma
-            // posicao que ninguem gravou.
-            if (intencao) {
-              char chave[192];
-              prog_chave(chave, sizeof chave, ci->imdb, ci->temporada, ci->episodio);
-              prog_remover(chave);
-              // As mesmas tres fontes de "Tirar de Continuar assistindo": quem
-              // marcou como visto tambem nao quer o card de retomada de volta
-              // no proximo ciclo.
-              trakt_playback_remover(ci->imdb);
-              syncprog_remover(chave);
-              cat_zerar_progresso(atual);
-            }
-          }
-        }
-        espelhoAplicado = 1;
-        // A HOME TEM DE MUDAR NA HORA.
-        //
-        // cat_historico_definir_id so mexe na tabela lateral de historico, e
-        // nenhuma fileira le dela: quem monta as fileiras e a descoberta, a
-        // partir do que o Trakt respondeu. Sem este pedido a mudanca so
-        // aparecia no ciclo seguinte — o "tiro de assistido e a home nao da
-        // refresh, tenho que sair e voltar" do relato.
-        //
-        // desc_remontar_fileiras remonta SEM REDE, a partir do que ja esta em
-        // memoria; e a mesma porta que a mudanca de limite de fileiras usa.
-        desc_remontar_fileiras();
-        montar();
-      }
-    }
-  }
+  // Sem votacao posterior: as duas escritas (lista e historico) resolvem na
+  // hora dentro de aplicar() e ja aplicam o espelho la. Nao ha estado
+  // PENDENTE que sobreviva ao quadro do OK.
 }
 
 void ctx_desenhar(Uint32 agora) {

@@ -75,6 +75,7 @@ static const char *ROTULOS[MENU_N] = { "Início", "Busca", "Biblioteca", "Perfil
 #define MENU_RODAPE         MENU_N
 
 static int   pediuTrocar = 0;
+static int   railFixaVisivel = 1;
 static int   aberto  = 0;
 static int   destino = MENU_INICIO;
 static int   linha   = MENU_INICIO;   // destaque; so vira destino ao escolher
@@ -104,6 +105,10 @@ static void desenhaRailFixa(void) {
   }
   desenhaRodape(0.0f, NV_LEGACY_RAIL_W, 0.95f, 0.0f);
 }
+
+// Telas full-bleed (biblioteca, detalhe) escondem a faixa fixa; o menu como
+// camada continua abrindo normalmente. Chamado todo quadro pelo app.
+void menu_rail_fixa_visivel(int v) { railFixaVisivel = v ? 1 : 0; }
 
 int menu_iniciar(void) {
   aberto = 0; destino = MENU_INICIO; linha = MENU_INICIO; mudou = 0;
@@ -285,7 +290,12 @@ void menu_desenhar(Uint32 agora) {
   // camada quando ganha foco. O port ja movia o conteudo para 104 nesse caso
   // (ajustes_conteudo_x), mas continuava pintando os 144px da rail por baixo
   // dele: uma faixa escura sob o primeiro card, sem nada em cima.
-  if (!aberto && desliza < .002f && !ajustes_rail_recolhida()) desenhaRailFixa();
+  // A biblioteca nao mostra a faixa fixa (ver menu_rail_fixa_visivel): a
+  // grade dela comeca em x=96 e a faixa de 144px comeria a primeira coluna —
+  // o mesmo motivo pelo qual o detalhe, full-bleed, tambem nao a tem. A barra
+  // continua abrindo como camada por cima de qualquer tela.
+  if (!aberto && desliza < .002f && !ajustes_rail_recolhida() && railFixaVisivel)
+    desenhaRailFixa();
   if (!aberto && desliza < 0.002f) return;
 
   float w = anim_mistura(NV_MENU_W_ICONE, NV_MENU_W_ABERTO, anim_suave(expande));

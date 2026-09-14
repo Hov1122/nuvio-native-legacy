@@ -45,7 +45,8 @@ void trakt_esquecer(void);
 // minutos restantes (Cinemeta), em paralelo; compacta os que o Cinemeta nao
 // conhece e devolve quantos sobraram. Nao depende de credencial Trakt.
 // BLOQUEIA — chamar do fio de descoberta.
-int  trakt_enfeitar_lote(CatItem *saida, int n);
+// Mudou de nome e de casa (ver catalogo.h): e puro Cinemeta, e nenhum montador
+// de fileira deve incluir este cabecalho so por causa dela.
 
 // Preenche ate `max` itens do "continue assistindo", ja com arte resolvida.
 // BLOQUEIA — chamar do fio de descoberta. Devolve quantos preencheu.

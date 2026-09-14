@@ -19,8 +19,8 @@
 #include "perfis.h"
 #include "perfilsel.h"
 #include "sync.h"
-#include "traktauth.h"
 #include "simklauth.h"
+#include "simkl.h"
 #include "text.h"
 #include "vertudo.h"
 #include "posplay.h"
@@ -43,12 +43,14 @@
 #include "video.h"
 #include "addons.h"
 #include "descoberta.h"
-#include "trakt.h"
 #include "faixas.h"
 #include "episodios.h"
+#include "vistoep.h"
+#include "idioma.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <math.h>
 
 // Link de debrid expira em minutos; um minuto e folga suficiente para o usuario
 // apertar Reproduzir logo depois de abrir o titulo sem pagar uma busca a mais.
@@ -67,7 +69,10 @@ typedef struct { unsigned geracao; int perfil; char conta[96]; } PerfilPedido;
 static void *carregarPerfil(void *u) {
   PerfilPedido *pedido=u;
   PerfilDados novo={0};
-  int sucesso=trakt_perfil(&novo);
+  // Snapshot do Simkl, na worker: totais de todo o periodo + identidade.
+  // Sem vinculo, sucesso 0 com honestidade (ver o ramo em app_atualizar).
+  // BLOQUEIA de proposito — esta funcao ja e um fio destacado.
+  int sucesso = simkl_perfil(&novo);
   pthread_mutex_lock(&perfilTrava);
   // A troca de conta/perfil invalida a resposta. O worker termina, mas nunca
   // publica uma identidade antiga nem deixa um snapshot obsoleto na fila.
@@ -124,10 +129,18 @@ static int sair = 0;
 // perfis_ativo() no instante em que a tela de escolha abriu. So serve para uma
 // pergunta: a pessoa TROCOU de perfil, ou confirmou o mesmo? Agora que a tela
 // aparece a cada arranque, confirmar o mesmo perfil e o caso comum — e recarga
-// (invalidar o Trakt, reaplicar ajustes, um ciclo de sync inteiro de ~8
-// requisicoes) num perfil que nao mudou seria pagar o preco da troca em toda
-// abertura do app.
+// (reaplicar ajustes, um ciclo de sync inteiro de ~8 requisicoes) num perfil
+// que nao mudou seria pagar o preco da troca em toda abertura do app.
 static int perfilAntes = 1;
+
+// Troca de perfil em voo: do OK na escolha ate dados novos na tela, a home
+// mostra o perfil ANTERIOR sem dizer nada — ~5 s de conteudo alheio. Enquanto
+// vale, um veu com a frase cobre a home. Cai na primeira publicacao depois do
+// pedido, ou em 30 s se a rede nao responder (offline).
+static int trocaEmAndamento = 0;
+static unsigned trocaPublicacao = 0;
+static Uint32 trocaDesde = 0;
+#define TROCA_TETO_MS 30000u
 
 // O detalhe precisa do retangulo REAL de onde o card saiu para o voo comecar
 // dali. Cada tela que abre um titulo entrega o seu; quando nenhuma entrega
@@ -218,6 +231,11 @@ static void episodioDoDetalhe(void) {
 static int homePronta;
 
 int app_iniciar(const char *dirArte) {
+  // Carimbo de build no log: a versao em Ajustes e estatica, entao dois
+  // pacotes diferentes sao indistinguiveis na tela. Quando "nada mudou" apos
+  // instalar, a primeira pergunta e sempre esta linha (tecla vermelha).
+  printf("[nuvio] build %s %s\n", __DATE__, __TIME__);
+  fflush(stdout);
   homePronta = home_iniciar(dirArte);
   if (!homePronta)
     printf("[app] sem arte no pacote: a home so aparece depois do primeiro sync\n");
@@ -232,7 +250,7 @@ int app_iniciar(const char *dirArte) {
   if (sessao_logada()) {
     tela = TELA_HOME;
     // Com sessao gravada o ciclo comeca no arranque: e ele que traz os addons
-    // e o Trakt da pessoa, sem os quais a home mostra so o que veio no pacote.
+    // e os vinculos da pessoa, sem os quais a home mostra so o que veio no pacote.
     sync_iniciar();
     // A ESCOLHA DE PERFIL ABRE AQUI, e nao daqui a alguns segundos.
     //
@@ -318,7 +336,13 @@ void app_evento(const SDL_Event *e) {
 
   // A folha de fontes fica acima de tudo: ela e uma pergunta, e enquanto ela
   // esta em pe nada mais deve responder ao D-pad.
-  if (faixas_aberta()) { faixas_evento(e); return; }
+  // Espaco passa direto para o player: e play/pause fisico (ver shell) e a
+  // folha o ignora — sem isto a pausa morria na folha aberta.
+  if (faixas_aberta()) {
+    if (e->type == SDL_KEYDOWN && e->key.keysym.sym == SDLK_SPACE &&
+        player_aberto()) { player_evento(e); return; }
+    faixas_evento(e); return;
+  }
   if (episodios_aberto()) { episodios_evento(e); return; }
   if (stream_folha_aberta()) { stream_folha_evento(e); return; }
   if (player_aberto()) { player_evento(e); return; }
@@ -346,6 +370,7 @@ void app_evento(const SDL_Event *e) {
   // ESQUERDA — e num controle elas vem — sao entregues a tela de tras, que
   // ainda acha que e a dona do foco.
   if (tela == TELA_HOME && home_pediu_menu()) menu_abrir();
+  if (tela == TELA_BIBLIOTECA && biblioteca_pediu_menu()) menu_abrir();
 }
 
 // A tela de detalhe pode pedir para abrir OUTRO titulo (um credito da
@@ -353,9 +378,10 @@ void app_evento(const SDL_Event *e) {
 // nao ela: reabrir a si mesma no meio do proprio desenho e o tipo de coisa que
 // quebra em silencio, e o roteador ja e o unico lugar que sabe abrir titulo.
 // O botao do olho: marcar como ASSISTIDO. Grava progresso cheio no arquivo do
-// app e avisa o Trakt, que e a fonte que o dono usa nos outros aparelhos. Fica
-// no roteador pelo mesmo motivo de tudo mais: e ele que conhece catalogo e
-// Trakt, e a tela de detalhe nao precisa conhecer nenhum dos dois.
+// app e espelha no historico do Simkl, que e a fonte que o dono usa nos outros
+// aparelhos. Fica no roteador pelo mesmo motivo de tudo mais: e ele que
+// conhece catalogo e Simkl, e a tela de detalhe nao precisa conhecer nenhum
+// dos dois.
 static void marcarAssistidoSeSolicitado(void) {
   const CatItem *c;
   int i;
@@ -363,23 +389,25 @@ static void marcarAssistidoSeSolicitado(void) {
   i = detail_indice();
   c = cat_item(i);
   if (!c) return;
-  // ALTERNA, e manda para o HISTORICO do Trakt.
-  //
-  // Estava chamando trakt_marcar (que e /scrobble/pause) com duracao 1.0 — e
-  // aquela funcao comeca com `durSeg <= 1.0 -> return`. O botao mudava so o
-  // espelho local e o Trakt NUNCA era informado: parecia funcionar e nao
-  // funcionava. Agora vai por /sync/history, que e o endpoint de "assisti".
+  // ALTERNA, e manda para o HISTORICO do Simkl (/sync/history, o endpoint de
+  // "assisti").
   //
   // E alterna em vez de so marcar: o icone ja mostra os dois estados, entao um
   // botao que so soma nao teria como desfazer um toque errado.
   // Antes: cat_salvar_progresso(i, ..., 1.0). A guarda `durSeg <= 1.0` daquela
-  // funcao devolvia antes de gravar — o espelho local nunca mudava, so o Trakt.
+  // funcao devolvia antes de gravar — o espelho local nunca mudava.
   // Sem duracao conhecida do item, usa-se uma hora inteira como sentinela: o
   // que importa e a porcentagem (100% ou 0%), e e isso que sync e fileira leem.
   { int visto = (c->progresso >= 90);
     const double dur = 3600.0;
     cat_salvar_progresso(i, visto ? 0.0 : dur, dur);
-    if (c->imdb[0]) trakt_assistido(c->imdb, !visto);
+    // Espelho no Simkl quando vinculado. Best-effort: o progresso acima ja
+    // foi salvo localmente e na conta; um post falho so aparece no log.
+    if (c->imdb[0]) {
+      int t = 0, e = 0;
+      detail_ep_foco(&t, &e);
+      simkl_marcar(c->imdb, c->tipo, t, e, !visto);
+    }
     printf("[app] assistido %s: %s\n", visto ? "desmarcado" : "marcado",
            c->titulo); fflush(stdout); }
 }
@@ -431,13 +459,23 @@ void app_atualizar(float dt, Uint32 agora) {
     return;
   }
 
-  // Os vinculos de Trakt e Simkl avancam TODO quadro, em qualquer tela: os dois
-  // fazem poll. MEDIDO na TV: estas duas linhas viviam dentro do `if` da tela
-  // de perfil (a indentacao enganava), entao o poll so rodava ali — em Ajustes,
-  // onde o vinculo e feito, "Aguardando a autorizacao" nunca saia do lugar
-  // mesmo com a pessoa ja tendo autorizado no celular.
-  traktauth_passo((unsigned)agora);
+  // O vinculo do Simkl avanca TODO quadro, em qualquer tela: ele faz poll.
+  // MEDIDO na TV: esta linha vivia dentro do `if` da tela de perfil (a
+  // indentacao enganava), entao o poll so rodava ali — em Ajustes, onde o
+  // vinculo e feito, "Aguardando a autorizacao" nunca saia do lugar mesmo
+  // com a pessoa ja tendo autorizado no celular.
   simklauth_passo((unsigned)agora);
+
+  // Fim da troca de perfil (ver o comentario nos estaticos): primeira
+  // publicacao depois do pedido, ou o teto. Sem isto o veu ficaria para
+  // sempre numa troca offline.
+  if (trocaEmAndamento &&
+      (cat_publicacoes() != trocaPublicacao ||
+       (Uint32)(SDL_GetTicks() - trocaDesde) >= TROCA_TETO_MS)) {
+    trocaEmAndamento = 0;
+    printf("[app] troca de perfil pronta\n");
+    fflush(stdout);
+  }
 
   if (tela == TELA_ESCOLHA_PERFIL) {
     sync_passo((unsigned)agora);
@@ -476,7 +514,7 @@ void app_atualizar(float dt, Uint32 agora) {
       // rodar() PARA depois de perfis_puxar() quando ha escolha pendente — o
       // sync fica interrompido justamente esperando esta tela. Se confirmar o
       // mesmo perfil nao reinicia nada, o ciclo nunca termina e a conta NAO
-      // SINCRONIZA a sessao inteira: os addons, o Trakt e o progresso ficam nos
+      // SINCRONIZA a sessao inteira: os addons e o progresso ficam nos
       // do cache da abertura anterior. Medido na TV do dono: ele acrescentou um
       // addon na conta, confirmou o mesmo perfil, e o app seguiu listando os 4
       // addons antigos, com "[sync] ciclo interrompido" como ultima linha.
@@ -487,8 +525,25 @@ void app_atualizar(float dt, Uint32 agora) {
       // joga fora o que ja foi carregado, e reaplicar ajustes so faz sentido
       // quando o destino mudou.
       if (perfis_ativo() != perfilAntes) {
+        int nProg;
         invalidarPerfil();
         sync_reaplicar_ajustes();
+        // Troca de VERDADE: cada superficie abaixo guarda estado do perfil
+        // anterior e nenhuma se limpa sozinha. Sem isto o continuar, os
+        // vistos e o Simkl do perfil 1 seguiam na tela do perfil 2.
+        simklauth_trocar_perfil(perfis_ativo());
+        simkl_esquecer();
+        simkl_puxar();
+        vistoep_esquecer();
+        cat_historico_esquecer();
+        nProg = cat_reaplicar_progresso();
+        printf("[app] troca de perfil: %d progresso(s) reaplicados\n", nProg);
+        fflush(stdout);
+        desc_remontar_fileiras();
+        desc_repetir();
+        trocaEmAndamento = 1;
+        trocaPublicacao = cat_publicacoes();
+        trocaDesde = SDL_GetTicks();
       }
       sync_iniciar();
       tela = TELA_HOME;
@@ -523,16 +578,10 @@ void app_atualizar(float dt, Uint32 agora) {
   // de perfil, na primeira vez que a home aparece de verdade (homePronta, sem
   // player nem detalhe por cima), o cartao nao disputa com nada.
   //
-  // Chamar em todo quadro nao custa: a decisao acontece uma vez e o modulo a
-  // guarda — a leitura do arquivo de bandeira nao se repete.
-  if (tela == TELA_HOME && homePronta && !player_aberto() && !detail_aberto()) {
-    registro_aviso_primeira_vez();
-    // Mesmo lugar e mesma razao: o explicador de "Salvos" fala de uma tecla do
-    // controle, e ensinar tecla enquanto a pessoa enquadra um QR no celular nao
-    // ensina nada. Ele tambem espera o cartao do log sair — dois cartoes de
-    // primeira vez ao mesmo tempo seria um em cima do outro.
-    if (!registro_aberto()) sintro_primeira_vez();
-  }
+  // Sem cartoes de primeira execucao: o aviso do log e o explicador de
+  // "Salvos" sairam a pedido — a home abre limpa desde o primeiro login. O
+  // painel de log continua na tecla vermelha; a escolha de onde o "+" salva
+  // continua em Ajustes › Interface e conta, com o padrao na lista do Nuvio.
 
   // E o ciclo automatico — nunca com o player aberto: rajada de HTTP no meio
   // do video disputa CPU e rede com o decodificador.
@@ -556,10 +605,10 @@ void app_atualizar(float dt, Uint32 agora) {
     PerfilDados snapshot; int sucesso;
     pthread_mutex_lock(&perfilTrava); snapshot=perfilPendente; sucesso=perfilSucesso; pthread_mutex_unlock(&perfilTrava);
     if (sucesso) perfil_definir_dados(&snapshot);
-    else if (!trakt_ativo()) perfil_definir_estado(PERFIL_ESTADO_DESCONECTADO,
-                                                    "Trakt desconectado. Vincule a conta para ver seu perfil.");
+    else if (!simkl_ligado()) perfil_definir_estado(PERFIL_ESTADO_INDISPONIVEL,
+                               "Vincule o Simkl em Ajustes › Interface e conta para ver seu resumo.");
     else perfil_definir_estado(PERFIL_ESTADO_INDISPONIVEL,
-                               "Perfil indisponível. O último resumo continua seguro, se houver.");
+                               "Resumo indisponível neste pacote. Seu progresso continua salvo na conta Nuvio e no Simkl.");
     atomic_store_explicit(&perfilCarga, 0, memory_order_release);
   }
   if (tela == TELA_PERFIL && perfil_pediu_atualizar()) pedirPerfil();
@@ -716,14 +765,14 @@ void app_atualizar(float dt, Uint32 agora) {
       aguardandoFonte = 1;
     }
     if (detail_pediu_marcar()) {
-      // Alterna no Trakt E no espelho local. O estado de partida vem de
-      // ci->naLista, que a descoberta preencheu com a watchlist de verdade;
+      // Alterna no Simkl (quando pedido) E no espelho local. O estado de
+      // partida vem de ci->naLista, que a conta e a lista local preencheram;
       // sem ele o botao adicionava de novo um titulo que ja estava la.
       int i = detail_indice();
       const CatItem *c = cat_item(i);
       // A INTENCAO E CAPTURADA ANTES DE QUALQUER ESCRITA, e as tres escritas
       // usam o MESMO valor. Antes cada linha relia `c->naLista`, e a segunda
-      // ja lia o campo que a primeira tinha mudado — o "+" mandava ao Trakt o
+      // ja lia o campo que a primeira tinha mudado — o "+" mandava ao Simkl o
       // oposto do que gravava no espelho local sempre que a ordem mudasse. E a
       // mesma disciplina que ctxmenu.c ja aplica (e que o teste de contrato
       // cobra la).
@@ -731,13 +780,13 @@ void app_atualizar(float dt, Uint32 agora) {
       biblioteca_alternar_lista(i);
       // LOCAL SEMPRE, e primeiro. E o unico destino que sobrevive ao
       // fechamento do app sem depender de conta nenhuma; ver salvos.h. Sem
-      // isto, quem nao tem Trakt vinculado apertava "+" e nao guardava nada.
+      // isto, quem nao tem nada vinculado apertava "+" e nao guardava nada.
       if (c) salvos_definir(c, entrar);
-      // O TRAKT SO SE A PESSOA PEDIU. A escolha vem do explicador de primeira
-      // vez e continua em Ajustes › Interface e conta ("Onde o + salva"). O
-      // padrao e ligado, entao para quem ja usava o app nada muda.
-      if (c && c->imdb[0] && ajustes_salvos_no_trakt())
-        trakt_watchlist(c->imdb, entrar);
+      // O SIMKL SO SE A PESSOA PEDIU. A escolha vem do explicador de primeira
+      // vez e continua em Ajustes › Interface e conta ("Onde o + salva").
+      // Best-effort como o historico: o espelho local abaixo nao espera.
+      if (c && c->imdb[0] && ajustes_salvos_no_simkl())
+        simkl_lista(c->imdb, c->tipo, entrar);
       if (c) cat_definir_na_lista(i, entrar);
     }
     if (detail_pediu_fontes())     stream_folha_abrir();
@@ -830,7 +879,7 @@ void app_atualizar(float dt, Uint32 agora) {
   // a descoberta (montarContinuar), e nada a refazia ao sair.
   //
   // POR QUE desc_repetir() E NAO UMA REMONTAGEM BARATA, que era o meu primeiro
-  // reflexo: montarContinuar chama a rede (trakt_continuar, trakt_enfeitar_lote)
+  // reflexo: montarContinuar chama a rede (simkl_continuar, enfeite Cinemeta)
   // e usa buffers `static` do fio de descoberta — chama-la daqui seria I/O
   // bloqueante no fio de desenho E corrida com aquele fio. desc_repetir() ja e
   // a resposta da casa para "esta fileira precisa ser refeita": ajustes.c a usa
@@ -866,6 +915,9 @@ void app_atualizar(float dt, Uint32 agora) {
 
   player_atualizar(dt, agora);
   detail_atualizar(dt, agora);
+  // A biblioteca e full-bleed: a faixa fixa comeria a primeira coluna da
+  // grade (x=96 contra 144 da faixa). A camada continua abrindo em toda tela.
+  menu_rail_fixa_visivel(tela != TELA_BIBLIOTECA);
   menu_atualizar(dt, agora);
   // PÓS-REPRODUÇÃO. O proximo episodio reabre a busca de fonte com o id novo;
   // o titulo relacionado sai do player e abre o detalhe, que e onde o dono
@@ -1060,6 +1112,30 @@ static void desenharTelas(Uint32 agora) {
   episodios_desenhar();
   stream_folha_desenhar(agora);
   faixas_desenhar(agora);
+  // Veu da troca de perfil (ver os estaticos): a home de baixo e a do perfil
+  // anterior ate a rede responder. Tres pontos pulsantes + frase; so
+  // informacao, sem roubar tecla — a navegacao na grade velha por alguns
+  // segundos e inofensiva perto de travar o controle.
+  if (trocaEmAndamento && tela == TELA_HOME && !player_aberto()) {
+    GfxRect veu = { 0, 0, NV_TELA_W, NV_TELA_H };
+    float cx = NV_TELA_W * 0.5f, cy = NV_TELA_H * 0.5f;
+    int i;
+    gfx_cor(veu, 0.0f, 0, 0, 0, 0.55f);
+    for (i = 0; i < 3; i++) {
+      float f;
+      if (ajustes_animacoes_reduzidas()) f = (i == 1) ? 1.0f : 0.45f;
+      else {
+        float ph = (float)((agora + (Uint32)(i * 300)) % 900) / 900.0f;
+        f = 0.35f + 0.65f * (0.5f - 0.5f * cosf(ph * 6.28318f));
+      }
+      gfx_cor((GfxRect){ cx - 54.0f + (float)i * 54.0f - 11.0f, cy - 45.0f,
+                         22.0f, 22.0f },
+              0.5f, 0.96f, 0.96f, 0.98f, f);
+    }
+    { TxtLinha t = txt_linha(TXT_TITULO2, i18n("A trocar de perfil…"),
+                             245, 246, 250, 255);
+      txt_desenhar_alpha(t, cx - (float)t.w * 0.5f, cy - 2.0f, 1.0f); }
+  }
 }
 
 void app_desenhar(Uint32 agora) {

@@ -983,22 +983,32 @@ static GLuint tex_obter_limite(const char *caminho, int limite) {
     // hero (1920). Se o teto novo e maior e a textura pronta ficou menor que
     // ele, refaz — senao o hero herda para sempre a versao pequena que o card
     // pediu primeiro, e o borrao volta sem explicacao aparente.
+    //
+    // STALE-WHILE-REVALIDATE: durante a re-decodificacao, devolver a textura
+    // VELHA em vez de 0. Antes o cartaz piscava para o cinza "sem arte" a cada
+    // promocao (foco que amplia o card, hero que herda do poster) e so voltava
+    // quando a versao maior ficava pronta — o "vira arte indisponivel por um
+    // segundo e depois volta" do relato. A troca pelo worker e atomica sob o
+    // mutex e o desenho pede a cada quadro, entao a janela com o nome velho e
+    // de um quadro no maximo.
     if (limite > itens[i].limite) {
       int fonteMenor = (itens[i].estado == PRONTO && itens[i].w < itens[i].limite);
+      GLuint velha = (itens[i].estado == PRONTO) ? itens[i].tex : 0;
       itens[i].limite = limite;
       // `w < limite` NAO basta: um poster da Cinemeta tem 250px de origem, e
       // pedi-lo a 320 refaz o decode para devolver os mesmos 250 — trabalho
       // puro, mais o cinza enquanto refaz. Se a textura pronta ja e MENOR que o
       // teto que ela mesma tinha, a fonte acabou; nao ha o que ganhar.
-      if (itens[i].estado == PRONTO && itens[i].w < limite && !fonteMenor) {
+      if (velha && itens[i].w < limite && !fonteMenor) {
         int prox = (filaFim + 1) % MAX_FILA;
         if (prox != filaIni) {
           itens[i].estado = PENDENTE;
           fila[filaFim] = i; filaFim = prox; SDL_CondSignal(cond);
+          saida = velha;
         }
       }
     }
-    saida = itens[i].estado == PRONTO ? itens[i].tex : 0;
+    if (!saida) saida = itens[i].estado == PRONTO ? itens[i].tex : 0;
   } else {
     int novo = slotLivre();
     if (novo >= 0) {
@@ -1085,6 +1095,22 @@ float tex_aspecto(const char *caminho) {
     a = (float)itens[i].w / (float)itens[i].h;
   SDL_UnlockMutex(mtx);
   return a;
+}
+
+// 1 quando o caminho ja FALHOU (404, decode impossivel) — diferente de "ainda
+// carregando" (PENDENTE ou sem slot), que devolve 0. Quem desenha usa para
+// cair na arte reserva SEM esperar o recuo esgotar: um cartaz com poster
+// morto e backdrop vivo nao tem por que ficar cinza a sessao inteira.
+int tex_falhou(const char *caminho) {
+  int r = 0;
+  unsigned long h;
+  int i;
+  if (!caminho || !*caminho) return 0;
+  h = hashCaminho(caminho);
+  BUSCA_MEDIDA(i, caminho, h);
+  if (i >= 0 && itens[i].estado == FALHOU) r = 1;
+  SDL_UnlockMutex(mtx);
+  return r;
 }
 
 int tex_marca_escura(const char *caminho) {

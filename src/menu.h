@@ -51,6 +51,10 @@ int  menu_visivel(void);
 // impor o estado inicial ou reagir a uma navegacao que nao veio da barra.
 int  menu_destino(void);
 void menu_definir_destino(int destino);
+
+// Esconde a faixa fixa da rail sem desligar o menu como camada. O app liga
+// para telas full-bleed (biblioteca) e desliga para as demais, todo quadro.
+void menu_rail_fixa_visivel(int v);
 // 1 uma unica vez, no quadro em que o usuario escolheu um destino DIFERENTE do
 // que estava em vigor. Consome a flag: quem le, trata. Sem isso o app teria que
 // guardar o destino anterior so para descobrir que ele mudou.

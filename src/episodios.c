@@ -9,7 +9,7 @@
 #include "layout.h"
 #include "anim.h"
 #include "vistoep.h"
-#include "trakt.h"
+#include "simkl.h"
 #include "syncprog.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -79,16 +79,16 @@ static void menuAbrir(int idx, int t, int e, const char *nome, int so) {
   vmAberto = 1; vmFoco = 0; vmConsumir = 1; vmFontesPed = 0;
 }
 
-// O ENVIO VAI PARA UM FIO. trakt_episodios_marcar e syncep_empurrar sao
-// sincronas de proposito (esta escrito nos dois cabecalhos), e cada uma pode
-// levar 20 s de timeout. No fio do desenho isso congela a TV.
+// O ENVIO VAI PARA UM FIO. simkl_marcar_lote e syncep_empurrar sao sinceros
+// sobre o custo (a primeira leva um POST por episodio, com ritmo proprio; a
+// segunda e a conta Nuvio) — no fio do desenho qualquer uma congela a TV.
 //
 // O efeito LOCAL ja aconteceu antes de o fio nascer: a lista redesenha no mesmo
-// quadro e este fio so leva a noticia ao servidor.
+// quadro e este fio so leva a noticia aos servidores.
 typedef struct { char imdb[24], tipo[12]; VistoPar pares[64]; int n, visto; } Envio;
 static void *enviarVisto(void *u) {
   Envio *e = (Envio *)u;
-  trakt_episodios_marcar(e->imdb, e->pares, e->n, e->visto);
+  simkl_marcar_lote(e->imdb, e->tipo, e->pares, e->n, e->visto);
   syncep_empurrar(e->imdb, e->tipo, e->pares, e->n, e->visto);
   free(e);
   return NULL;

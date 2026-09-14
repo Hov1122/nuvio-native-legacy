@@ -1,4 +1,6 @@
 #include "simklauth.h"
+#include "simkl.h"
+#include "descoberta.h"
 #include "idioma.h"
 #include "nuvem.h"
 #include "dados.h"
@@ -6,6 +8,7 @@
 #include "sync.h"
 #include "js.h"
 #include "jsw.h"
+#include "perfis.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,34 +25,66 @@ static char url[200];
 static char erro[200];
 static char token[300];
 static unsigned proximoPoll, comecouMs, limiteMs = 900000u;
+// De qual perfil Nuvio e o token em memoria. 0 = seguir perfis_ativo().
+// O vinculo e POR PERFIL (a conta guarda um token por p_profile_id, como o
+// push ja fazia): sem isto os 4 perfis da TV dividiam um simkl.txt so e a
+// biblioteca, o continuar e o resumo misturavam gente diferente.
+static int perfilDono;
+static int perfilDoPedido;
+
+// Arquivo do token deste perfil. Legado sem sufixo vira o do perfil em vigor
+// uma vez (ver trocar_perfil), para o vinculo feito antes desta versao nao
+// evaporar no update.
+static void arqPerfil(char *dst, size_t tam, int perfil) {
+  if (!dst || !tam) return;
+  if (perfil < 1) perfil = 1;
+  if (perfil == 1) snprintf(dst, tam, "%s", SMK_ARQ);
+  else snprintf(dst, tam, "simkl-%d.txt", perfil);
+}
 
 static pthread_t fio;
 static int fioVivo, fioPronto, tokenNovo;
 
-// Todo pedido leva client_id, app-name e app-version na QUERY — nao em
-// cabecalho. Sem eles o Simkl responde erro sem dizer o que faltou.
+// Todo pedido leva client_id, app-name e app-version na QUERY, mais dois
+// cabecalhos: simkl-api-key (igual ao addon oficial) e um User-Agent
+// descritivo. Sem o User-Agent o Simkl devolve 403 mudo — foi o "nao conecta"
+// relatado. Mesma forma do addon oficial do Simkl para Kodi.
 static char *pegar(const char *caminho, int *status) {
-  char completo[500], cid[200], nome[120];
-  const char *cab[2];
+  char completo[500], cid[200], nome[120], chave[400];
+  const char *cab[4];
   nuvem_url_escapar(nuvem_simkl_cliente(), cid, sizeof cid);
   nuvem_url_escapar(nuvem_simkl_app()[0] ? nuvem_simkl_app() : "nuvio", nome, sizeof nome);
+  snprintf(chave, sizeof chave, "simkl-api-key: %s", nuvem_simkl_cliente());
+  // NO redirect param, ever: measured against the live API, any redirect=
+  // on /oauth/pin answers 403, bare client_id answers 200. (The official
+  // addon sends one, but this server rejects it — tested both encodings.)
   snprintf(completo, sizeof completo,
            "%s%s?client_id=%s&app-name=%s&app-version=1.0.1", SMK_BASE, caminho, cid, nome);
-  cab[0] = "Accept: application/json";
-  cab[1] = NULL;
+  cab[0] = "Accept: application/vnd.api+json";
+  cab[1] = chave;
+  cab[2] = "User-Agent: nuvio/1.0.1";
+  cab[3] = NULL;
   return rede_baixar_st(completo, 20, cab, status);
 }
 
 // ---------------------------------------------------------------- disco
 
+static int perfilEfetivo(void) {
+  int p = perfilDono > 0 ? perfilDono : perfis_ativo();
+  return p > 0 ? p : 1;
+}
+
 static void gravar(void) {
-  char buf[400];
+  char buf[400], arq[32];
   snprintf(buf, sizeof buf, "%s\n", token);
-  dados_gravar(SMK_ARQ, buf);
+  arqPerfil(arq, sizeof arq, perfilEfetivo());
+  dados_gravar(arq, buf);
 }
 
 int simklauth_carregar(void) {
-  char *b = dados_ler(SMK_ARQ);
+  char arq[32], *b;
+  arqPerfil(arq, sizeof arq, perfilEfetivo());
+  b = dados_ler(arq);
   if (!b) return 0;
   { char *fim = b + strlen(b);
     while (fim > b && (fim[-1] == '\n' || fim[-1] == '\r')) *--fim = 0; }
@@ -58,10 +93,53 @@ int simklauth_carregar(void) {
   return token[0] != 0;
 }
 
-void simklauth_esquecer(void) {
+const char *simklauth_token(void) { return token; }
+
+// Troca o perfil em vigor: esquece o token em memoria (SEM apagar arquivo)
+// e carrega o do novo perfil. Quem nao vinculou fica PARADO, e e isso mesmo:
+// herdar o vinculo do perfil anterior era o defeito. Chamar ao confirmar a
+// troca e no arranque, depois de perfis_carregar_ativo.
+void simklauth_trocar_perfil(int perfil) {
+  if (perfil < 1) perfil = 1;
+  if (perfilDono == perfil) return;
+  perfilDono = perfil;
   token[0] = userCode[0] = url[0] = erro[0] = 0;
   estado = SMK_PARADO;
-  dados_apagar(SMK_ARQ);
+  fioVivo = 0;
+  fioPronto = 0;
+  tokenNovo = 0;
+  simklauth_carregar();
+}
+
+void simklauth_esquecer(void) {
+  char arq[32];
+  int i;
+  token[0] = userCode[0] = url[0] = erro[0] = 0;
+  estado = SMK_PARADO;
+  // Sair apaga de TODOS os perfis: manter o token de um perfil na TV depois
+  // do logout deixaria a proxima conta a um PIN de distancia dele.
+  for (i = 1; i <= CONTA_PERFIL_MAX; i++) {
+    arqPerfil(arq, sizeof arq, i);
+    dados_apagar(arq);
+  }
+  simkl_esquecer();
+}
+
+// Credencial vinda da CONTA para o perfil em vigor (pull com p_profile_id).
+// So quando nao ha vinculo local: quem vinculou nesta TV manda, nao recebe.
+int simklauth_definir_remoto(const char *tk) {
+  char arq[32];
+  if (!tk || !*tk) return 0;
+  if (token[0]) return 0;
+  snprintf(token, sizeof token, "%s", tk);
+  estado = SMK_LIGADO;
+  arqPerfil(arq, sizeof arq, perfilEfetivo());
+  { char buf[400];
+    snprintf(buf, sizeof buf, "%s\n", token);
+    dados_gravar(arq, buf); }
+  printf("[simkl] vinculo da conta aplicado ao perfil %d\n", perfilEfetivo());
+  fflush(stdout);
+  return 1;
 }
 
 // ---------------------------------------------------------------- fluxo
@@ -145,6 +223,7 @@ void simklauth_comecar(void) {
   erro[0] = 0;
   comecouMs = 0;
   estado = SMK_PEDINDO;
+  perfilDoPedido = perfilEfetivo();
   soltar(fioPedir);
 }
 
@@ -155,6 +234,16 @@ void simklauth_passo(unsigned agoraMs) {
   if (tokenNovo) {
     Jsw c;
     tokenNovo = 0;
+    // Troca de perfil no meio do PIN: o token e do perfil que pediu, nao do
+    // que esta em vigor. Aplicar aqui vincularia a conta errada — descarta e
+    // a pessoa repete o gesto, que dura segundos.
+    if (perfilDoPedido != perfilEfetivo()) {
+      printf("[simkl] vinculo descartado (perfil trocou no meio)\n");
+      fflush(stdout);
+      token[0] = userCode[0] = url[0] = erro[0] = 0;
+      estado = SMK_PARADO;
+      return;
+    }
     gravar();
     jsw_iniciar(&c);
     jsw_obj_ini(&c);
@@ -164,6 +253,13 @@ void simklauth_passo(unsigned agoraMs) {
     jsw_livre(&c);
     printf("[simkl] vinculado nesta TV\n");
     fflush(stdout);
+    // Fresh token: pull watched history now (startup covers the reboot case
+    // once the boot hook lands; this covers linking mid-session).
+    simkl_puxar();
+    // E a fileira de retomada: a perna do Simkl no montarContinuar so entra
+    // com o vinculo, e sem remontar ela nasceria vazia ate o proximo ciclo
+    // (o mesmo "so aparece ao trocar a fonte" do progresso da conta).
+    if (desc_continuar_vazio()) desc_repetir();
   }
 
   if (estado != SMK_AGUARDANDO) return;

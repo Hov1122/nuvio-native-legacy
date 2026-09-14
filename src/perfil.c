@@ -267,13 +267,13 @@ static void desenharLoading(Uint32 agora, float a) {
 
 static void desenharVazio(float a) {
   const char *titulo = "Nenhuma reprodução neste período";
-  const char *corpo = "Conecte o Trakt e assista a um filme ou episódio. Seu resumo usa somente o histórico disponível.";
+  const char *corpo = "Conecte o Simkl e assista a um filme ou episódio. Seu resumo usa somente o histórico disponível.";
   if (estado == PERFIL_ESTADO_PRIVADO) {
     titulo = "Perfil privado ou histórico não compartilhado";
-    corpo = "O Trakt não liberou um histórico público para esta conta.";
+    corpo = "Nenhum histórico público foi liberado para esta conta.";
   } else if (estado == PERFIL_ESTADO_DESCONECTADO) {
-    titulo = "Trakt desconectado";
-    corpo = "Vincule o Trakt para carregar identidade, obras recentes e estatísticas.";
+    titulo = "Perfil indisponível";
+    corpo = "As estatísticas do perfil não estão disponíveis neste pacote.";
   } else if (estado == PERFIL_ESTADO_INDISPONIVEL || estado == PERFIL_ESTADO_ERRO) {
     titulo = "Perfil indisponível";
     corpo = erro[0] ? erro : "Não foi possível confirmar este resumo agora.";
@@ -326,8 +326,8 @@ static void desenharResumo(float a) {
   corta(TXT_TITULO1,b,246,identidadeX,consumoY,identidadeW,a);
   if(dados.aviso[0])corta(TXT_MINI,dados.aviso,183,identidadeX,PF_RESUMO_Y+292,identidadeW,a);
 
-  const char *rot[4]={"REPRODUÇÕES","FILMES","EPISÓDIOS","DIAS ATIVOS"};
-  int val[4]={dados.plays,dados.filmes,dados.episodios,dados.diasAtivosMes};
+  const char *rot[4]={"FILMES","EPISÓDIOS","ASSISTINDO","NA LISTA"};
+  int val[4]={dados.filmes,dados.episodios,dados.assistindo,dados.naLista};
   float x=PF_X+PF_W*.58f;
   for(int i=0;i<4;i++) {
     float xx=x+(i%2)*PF_W*.22f, yy=PF_RESUMO_Y+62+(i/2)*104;

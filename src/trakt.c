@@ -138,9 +138,9 @@ static int enfeitar(CatItem *d, const char *tipo) {
     { char *tr = strstr(ano, "\xe2\x80\x93"); if (tr) *tr = 0; }
     snprintf(d->meta, sizeof d->meta, "%.20s%s%.20s", ano,
              (ano[0] && r[0]) ? "  \xc2\xb7  " : "", r);
-    // Minutos que faltam, para a legenda do card. O Trakt da a porcentagem e o
-    // Cinemeta a duracao; o cruzamento das duas e o unico jeito de ter isto
-    // sem baixar o arquivo.
+    // Minutos que faltam, para a legenda do card. Quem chama da a porcentagem
+    // e o Cinemeta a duracao; o cruzamento das duas e o unico jeito de ter
+    // isto sem baixar o arquivo.
     if (d->progresso > 0 && d->progresso < 100) {
       int total = atoi(r);
       if (total > 0) d->restanteMin = total - (total * d->progresso) / 100;
@@ -187,10 +187,12 @@ static void *fioEnfeitar(void *u) {
 // simplesmente nao contava — agora o item ja esta na posicao, entao os que
 // falharam saem por compactacao, preservando a ordem do historico.
 //
-// Publico porque a fileira "Continuar assistindo" montada do progresso LOCAL
-// (descoberta.c, sem Trakt) precisa exatamente do mesmo enfeite: tem imdb,
-// tipo e porcentagem, e falta arte, sinopse e minutos restantes.
-int trakt_enfeitar_lote(CatItem *saida, int n) {
+// Publico como cinemeta_enfeitar_lote (ver catalogo.h) porque as fileiras
+// "Continuar assistindo" montadas do progresso LOCAL (descoberta.c) e do
+// SIMKL (simkl.c) precisam exatamente do mesmo enfeite: tem imdb, tipo e
+// porcentagem, e falta arte, sinopse e minutos restantes. Nenhuma chamada
+// Trakt aqui — so o Cinemeta, que e sem chave.
+int cinemeta_enfeitar_lote(CatItem *saida, int n) {
   if (n <= 0) return 0;
   enfTarefas = calloc((size_t)n, sizeof(TarefaEnf));
   if (enfTarefas) {
@@ -486,7 +488,7 @@ int trakt_continuar(CatItem *saida, int max) {
   // 75 series, ela devolveu 90675 bytes com ZERO ocorrencias de "seasons" e
   // "number", mesmo com ?extended=full. Nao retentar sem medicao nova.
 
-  n = trakt_enfeitar_lote(saida, n);
+  n = cinemeta_enfeitar_lote(saida, n);
 
   printf("[trakt] %d em andamento\n", n);
   fflush(stdout);
@@ -697,7 +699,9 @@ int trakt_perfil(PerfilDados *d) {
     while(p&&*p){
       const char *f,*bm,*bs,*be,*obj,*fo; char watched[32]="",imdb[24]="",titulo[128]="";
       int runtime=0,t=0,e=0,hi=-1;
-      while(*p&&(unsigned char)*p<=' ')p++; if(*p!='{')break; f=js_fim(p);
+      while (*p && (unsigned char)*p <= ' ') p++;
+      if (*p != '{') break;
+      f=js_fim(p);
       js_texto(p,f,"watched_at",watched,sizeof watched);
       bm=strstr(p,"\"movie\""); bs=strstr(p,"\"show\""); be=strstr(p,"\"episode\"");
       obj=(bs&&bs<f)?bs:((bm&&bm<f)?bm:NULL); if(!obj){p=js_prox(f);continue;}

@@ -33,6 +33,7 @@ void simklauth_comecar(void);
 void simklauth_passo(unsigned agoraMs);
 
 SmkEstado   simklauth_estado(void);
+const char *simklauth_token(void);
 const char *simklauth_codigo(void);
 const char *simklauth_url(void);
 const char *simklauth_erro(void);
@@ -40,5 +41,11 @@ const char *simklauth_erro(void);
 void simklauth_cancelar(void);
 int  simklauth_carregar(void);    // le o token guardado; 1 quando havia
 void simklauth_esquecer(void);
+// Troca o perfil em vigor: esquece o token em memoria (SEM apagar arquivo)
+// e carrega o do novo perfil. Quem nao vinculou fica PARADO.
+void simklauth_trocar_perfil(int perfil);
+// Credencial vinda da CONTA para o perfil em vigor. So quando nao ha vinculo
+// local; 1 quando aplicou.
+int  simklauth_definir_remoto(const char *token);
 
 #endif
